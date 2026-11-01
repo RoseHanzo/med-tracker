@@ -528,8 +528,8 @@ private fun DayDetails(data: AppData, date: LocalDate) {
                 val v = checkin.getValue(def.id)
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Text(def.name, style = MaterialTheme.typography.bodyMedium, modifier = Modifier.weight(1f))
-                    val c = ratingColor(v, def.highIsGood)
-                    Pill("$v/10", c.copy(alpha = 0.16f), c)
+                    val c = ratingColor(def, v)
+                    Pill(com.rosehanzo.medtracker.data.Scales.word(def, v), c.copy(alpha = 0.16f), c)
                 }
             }
         }
@@ -541,6 +541,10 @@ private fun DayDetails(data: AppData, date: LocalDate) {
                 val text = when (m.type) {
                     "weight" -> "Weight ${fmt1(m.v1)} kg"
                     "bp" -> "Blood pressure ${fmt1(m.v1)}/${fmt1(m.v2)}"
+                    "sleep" -> "Slept ${fmtMetric("sleep", m.v1)}"
+                    "sleephr" -> "Sleeping heart rate ${fmt1(m.v1)} bpm"
+                    "dosehr" -> "Heart rate after dose ${fmt1(m.v1)} bpm" + if (m.v2 > 0) " (${fmt1(m.v2)} before)" else ""
+                    "steps" -> "${fmtMetric("steps", m.v1)} steps"
                     else -> (if (m.source == "hc") "Average heart rate " else "Pulse ") + "${fmt1(m.v1)} bpm"
                 }
                 Row(verticalAlignment = Alignment.CenterVertically) {

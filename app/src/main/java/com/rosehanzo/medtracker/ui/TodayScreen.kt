@@ -331,28 +331,14 @@ private fun CheckInCard(data: AppData, today: LocalDate) {
             return@SectionCard
         }
         Text(
-            "Tap a number for anything you want to log, then save once.",
+            "Slide or tap where you are, then save once. Tap the handle again to clear it.",
             style = MaterialTheme.typography.bodySmall,
             color = mutedText(),
         )
         defs.forEachIndexed { index, def ->
             if (index > 0) HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f))
-            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Text(def.name, style = MaterialTheme.typography.titleSmall, modifier = Modifier.weight(1f))
-                    val v = values[def.id]
-                    if (v != null) {
-                        val c = ratingColor(v, def.highIsGood)
-                        Pill("$v/10", c.copy(alpha = 0.16f), c)
-                    }
-                }
-                ScaleRow(values[def.id], def.highIsGood) { v ->
-                    if (v == null) values.remove(def.id) else values[def.id] = v
-                }
-                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                    Text(def.low, style = MaterialTheme.typography.labelSmall, color = mutedText())
-                    Text(def.high, style = MaterialTheme.typography.labelSmall, color = mutedText())
-                }
+            CheckInBar(def, values[def.id]) { v ->
+                if (v == null) values.remove(def.id) else values[def.id] = v
             }
         }
         val current = values.toMap()

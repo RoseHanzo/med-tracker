@@ -37,6 +37,19 @@ import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.gestures.detectHorizontalDragGestures
+import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.rememberUpdatedState
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.PathEffect
+import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.input.pointer.pointerInput
+import com.rosehanzo.medtracker.data.SCALE_MOOD
+import com.rosehanzo.medtracker.data.Scales
+import com.rosehanzo.medtracker.data.SymptomDef
 import androidx.compose.ui.unit.dp
 import com.rosehanzo.medtracker.data.DayStatus
 import java.time.Instant
@@ -134,11 +147,14 @@ fun Pill(text: String, container: Color, content: Color, modifier: Modifier = Mo
     }
 }
 
-/** Colour for a 1–10 rating: green is good, red is bad. */
-fun ratingColor(value: Int, highIsGood: Boolean): Color {
-    val badness = (if (highIsGood) 10 - value else value - 1) / 9f
-    return if (badness < 0.5f) lerp(GoodFill, WarnFill, badness * 2f) else lerp(WarnFill, BadFill, (badness - 0.5f) * 2f)
+/** Colour for how bad something is: 0 = fine (green) … 1 = worst (red). */
+fun severityColor(severity: Float): Color {
+    val f = severity.coerceIn(0f, 1f)
+    return if (f < 0.5f) lerp(GoodFill, WarnFill, f * 2f) else lerp(WarnFill, BadFill, (f - 0.5f) * 2f)
 }
+
+/** Colour for a saved check-in value on its own scale. */
+fun ratingColor(def: SymptomDef, raw: Int): Color = severityColor(Scales.severity(def, raw))
 
 fun onFill(c: Color): Color = if (c.luminance() > 0.5f) Color(0xFF1B1B1B) else Color.White
 
@@ -148,29 +164,97 @@ fun statusColor(s: DayStatus): Color? = when (s) {
     else -> null
 }
 
-/** Horizontal row of tappable 1–10 circles. Tap the selected one again to clear it. */
+/**
+ * A check-in bar: tap or drag to pick where you are. No numbers are shown.
+ * [value] is the bar position (1 = left end) or null when not logged.
+ * Tapping the handle again clears it.
+ */
 @Composable
-fun ScaleRow(value: Int?, highIsGood: Boolean, onSelect: (Int?) -> Unit) {
-    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-        for (i in 1..10) {
-            val selected = value == i
-            val fill = if (selected) ratingColor(i, highIsGood) else MaterialTheme.colorScheme.surfaceContainerHigh
-            Box(
-                modifier = Modifier
-                    .weight(1f)
-                    .aspectRatio(1f)
-                    .clip(CircleShape)
-                    .background(fill)
-                    .clickable { onSelect(if (selected) null else i) },
-                contentAlignment = Alignment.Center,
-            ) {
-                Text(
-                    "$i",
-                    style = MaterialTheme.typography.labelLarge,
-                    fontWeight = if (selected) FontWeight.Bold else FontWeight.Normal,
-                    color = if (selected) onFill(fill) else mutedText(),
+fun CheckInBar(def: SymptomDef, value: Int?, onChange: (Int?) -> Unit) {
+    val steps = Scales.steps(def)
+    val isMood = def.scale == SCALE_MOOD
+    val track = MaterialTheme.colorScheme.outlineVariant
+    val tick = MaterialTheme.colorScheme.outline
+    val surface = MaterialTheme.colorScheme.surfaceContainerLowest
+    val color = value?.let { ratingColor(def, it) }
+    val latest by rememberUpdatedState(value)
+    val emit by rememberUpdatedState(onChange)
+
+    Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text(def.name, style = MaterialTheme.typography.titleSmall, modifier = Modifier.weight(1f))
+            Text(
+                value?.let { Scales.word(def, it) } ?: "Not logged",
+                style = MaterialTheme.typography.labelLarge,
+                color = color ?: MaterialTheme.colorScheme.outline,
+            )
+        }
+        Canvas(
+            Modifier
+                .fillMaxWidth()
+                .height(32.dp)
+                .pointerInput(steps) {
+                    val pad = 12.dp.toPx()
+                    fun posAt(x: Float): Int {
+                        val f = ((x - pad) / (size.width - 2 * pad)).coerceIn(0f, 1f)
+                        return 1 + Math.round(f * (steps - 1))
+                    }
+                    fun xOf(p: Int): Float = pad + (p - 1) / (steps - 1f) * (size.width - 2 * pad)
+                    detectTapGestures { o ->
+                        val cur = latest
+                        if (cur != null && abs(o.x - xOf(cur)) < 16.dp.toPx()) emit(null) else emit(posAt(o.x))
+                    }
+                }
+                .pointerInput(steps) {
+                    val pad = 12.dp.toPx()
+                    fun posAt(x: Float): Int {
+                        val f = ((x - pad) / (size.width - 2 * pad)).coerceIn(0f, 1f)
+                        return 1 + Math.round(f * (steps - 1))
+                    }
+                    detectHorizontalDragGestures(
+                        onDragStart = { o -> emit(posAt(o.x)) },
+                    ) { pointer, _ ->
+                        pointer.consume()
+                        val p = posAt(pointer.position.x)
+                        if (p != latest) emit(p)
+                    }
+                },
+        ) {
+            val pad = 12.dp.toPx()
+            val y = size.height / 2
+            val w = size.width - 2 * pad
+            fun xOf(p: Int): Float = pad + (p - 1) / (steps - 1f) * w
+            val trackH = 6.dp.toPx()
+
+            if (value == null) {
+                drawLine(
+                    tick, Offset(pad, y), Offset(pad + w, y), 1.5.dp.toPx(), StrokeCap.Round,
+                    pathEffect = PathEffect.dashPathEffect(floatArrayOf(8f, 8f)),
                 )
+            } else {
+                drawLine(track, Offset(pad, y), Offset(pad + w, y), trackH, StrokeCap.Round)
             }
+            if (isMood) {
+                for (p in 1..steps) {
+                    val h = if (p == 4) 11.dp.toPx() else 5.dp.toPx()
+                    drawLine(tick, Offset(xOf(p), y + 4.dp.toPx()), Offset(xOf(p), y + 4.dp.toPx() + h), 1.5.dp.toPx())
+                }
+            }
+            if (value != null && color != null) {
+                val from = if (isMood) xOf(4) else pad
+                val to = xOf(value)
+                if (abs(to - from) > 0.5f) drawLine(color, Offset(from, y), Offset(to, y), trackH, StrokeCap.Round)
+                drawCircle(surface, 10.dp.toPx(), Offset(to, y))
+                drawCircle(color, 10.dp.toPx() - 1.5.dp.toPx(), Offset(to, y), style = Stroke(3.dp.toPx()))
+            }
+        }
+        Row(Modifier.fillMaxWidth()) {
+            Text(def.low, style = MaterialTheme.typography.labelSmall, color = mutedText(), modifier = Modifier.weight(1f))
+            if (isMood) {
+                Text("Normal", style = MaterialTheme.typography.labelSmall, color = mutedText())
+                Spacer(Modifier.weight(1f))
+            }
+            Text(def.high, style = MaterialTheme.typography.labelSmall, color = mutedText())
         }
     }
 }

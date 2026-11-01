@@ -54,6 +54,8 @@ import androidx.compose.ui.unit.sp
 import com.rosehanzo.medtracker.data.AppData
 import com.rosehanzo.medtracker.data.DayStatus
 import com.rosehanzo.medtracker.data.Logic
+import com.rosehanzo.medtracker.data.Scales
+import com.rosehanzo.medtracker.data.SymptomDef
 import java.time.Instant
 import java.time.LocalDate
 import java.time.ZoneId
@@ -69,20 +71,40 @@ private val PULSE_COLOR = Color(0xFF4A90E2)
 private val BP_COLOR = Color(0xFFE0564F)
 private val WEIGHT_COLOR = Color(0xFF8E7CC3)
 
-private enum class Kind { SYMPTOM, PULSE, BP, WEIGHT }
+private enum class Kind { SYMPTOM, METRIC, BP }
 
-/** Something you can draw on the dose chart: a symptom or a body reading. */
-private data class Item(val key: String, val name: String, val color: Color, val kind: Kind, val unit: String = "")
+/**
+ * Something you can draw on the dose chart: a check-in item or a reading.
+ * Check-in items are charted as impact (higher = worse), from 1 to [max].
+ */
+private data class Item(
+    val key: String,
+    val name: String,
+    val color: Color,
+    val kind: Kind,
+    val metric: String = "",
+    val max: Double = 10.0,
+    val def: SymptomDef? = null,
+)
+
+/** Readings, in the order they appear as chips. */
+private val METRICS = listOf(
+    Triple("pulse", "Pulse", PULSE_COLOR),
+    Triple("bp", "Blood pressure", BP_COLOR),
+    Triple("weight", "Weight", WEIGHT_COLOR),
+    Triple("sleep", "Sleep", Color(0xFF3F6FD8)),
+    Triple("sleephr", "Sleeping heart rate", Color(0xFF2B8CBE)),
+    Triple("dosehr", "Heart rate after dose", Color(0xFFCC4E8A)),
+    Triple("steps", "Steps", Color(0xFF6B9E3A)),
+)
 
 private fun items(data: AppData): List<Item> {
     val symptoms = data.settings.symptoms.filter { it.visible }.mapIndexed { i, d ->
-        Item("s:${d.id}", d.name, ITEM_COLORS[i % ITEM_COLORS.size], Kind.SYMPTOM)
+        Item("s:${d.id}", Scales.chartName(d), ITEM_COLORS[i % ITEM_COLORS.size], Kind.SYMPTOM, max = Scales.impactMax(d).toDouble(), def = d)
     }
-    return symptoms + listOf(
-        Item("pulse", "Pulse", PULSE_COLOR, Kind.PULSE, " bpm"),
-        Item("bp", "Blood pressure", BP_COLOR, Kind.BP),
-        Item("weight", "Weight", WEIGHT_COLOR, Kind.WEIGHT, " kg"),
-    )
+    return symptoms + METRICS.map { (type, name, color) ->
+        Item(type, name, color, if (type == "bp") Kind.BP else Kind.METRIC, metric = type)
+    }
 }
 
 /** Points for an item between [start] and [end]. Blood pressure gives two lists (upper, lower). */
@@ -91,17 +113,18 @@ private fun points(data: AppData, item: Item, start: LocalDate, end: LocalDate):
     val hi = end.toEpochDay() + 1.0
     return when (item.kind) {
         Kind.SYMPTOM -> {
-            val id = item.key.removePrefix("s:")
+            val def = item.def ?: return listOf(emptyList())
             listOf(
                 data.checkins.mapNotNull { (date, values) ->
-                    val v = values[id] ?: return@mapNotNull null
+                    val v = values[def.id] ?: return@mapNotNull null
                     val x = runCatching { LocalDate.parse(date) }.getOrNull()?.toEpochDay()?.plus(0.5) ?: return@mapNotNull null
-                    if (x < lo || x > hi) null else x to v.toDouble()
+                    if (x < lo || x > hi) null else x to Scales.impact(def, v)
                 }.sortedBy { it.first },
             )
         }
-        Kind.PULSE -> listOf(data.metrics.filter { it.type == "pulse" }.map { dayX(it.time) to it.v1 }.filter { it.first in lo..hi })
-        Kind.WEIGHT -> listOf(data.metrics.filter { it.type == "weight" }.map { dayX(it.time) to it.v1 }.filter { it.first in lo..hi })
+        Kind.METRIC -> listOf(
+            data.metrics.filter { it.type == item.metric }.map { dayX(it.time) to it.v1 }.filter { it.first in lo..hi },
+        )
         Kind.BP -> {
             val bp = data.metrics.filter { it.type == "bp" }.filter { dayX(it.time) in lo..hi }
             listOf(bp.map { dayX(it.time) to it.v1 }, bp.map { dayX(it.time) to it.v2 })
@@ -109,14 +132,24 @@ private fun points(data: AppData, item: Item, start: LocalDate, end: LocalDate):
     }
 }
 
+fun fmtMetric(type: String, v1: Double, v2: Double = 0.0): String = when (type) {
+    "weight" -> fmt1(v1) + " kg"
+    "bp" -> "${fmt1(v1)}/${fmt1(v2)}"
+    "sleep" -> {
+        val mins = Math.round(v1 * 60).toInt()
+        "${mins / 60} h ${mins % 60} min"
+    }
+    "steps" -> String.format(java.util.Locale.UK, "%,d", v1.toLong())
+    else -> fmt1(v1) + " bpm"
+}
+
 private fun latestLabel(data: AppData, item: Item): String? = when (item.kind) {
     Kind.SYMPTOM -> {
-        val id = item.key.removePrefix("s:")
-        data.checkins.entries.filter { id in it.value }.maxByOrNull { it.key }?.value?.get(id)?.toString()
+        val def = item.def
+        if (def == null) null else data.checkins.entries.filter { def.id in it.value }.maxByOrNull { it.key }
+            ?.value?.get(def.id)?.let { Scales.word(def, it) }
     }
-    Kind.PULSE -> data.metrics.lastOrNull { it.type == "pulse" }?.let { fmt1(it.v1) + " bpm" }
-    Kind.WEIGHT -> data.metrics.lastOrNull { it.type == "weight" }?.let { fmt1(it.v1) + " kg" }
-    Kind.BP -> data.metrics.lastOrNull { it.type == "bp" }?.let { "${fmt1(it.v1)}/${fmt1(it.v2)}" }
+    else -> data.metrics.lastOrNull { it.type == item.metric }?.let { fmtMetric(it.type, it.v1, it.v2) }
 }
 
 /** Pills for a day: what you took, otherwise what the plan said. 0 if neither. */
@@ -148,7 +181,7 @@ fun TrendsScreen(data: AppData) {
     val all = items(data)
     var selected by remember {
         val withData = all.filter { it.kind == Kind.SYMPTOM && points(data, it, LocalDate.now().minusDays(89), LocalDate.now()).first().isNotEmpty() }
-        mutableStateOf((withData.take(2) + all.filter { it.kind == Kind.PULSE }).map { it.key }.toSet())
+        mutableStateOf((withData.take(2) + all.filter { it.metric == "pulse" }).map { it.key }.toSet())
     }
     val today = LocalDate.now()
     val start = today.minusDays(days - 1L)
@@ -275,9 +308,9 @@ private fun GlanceTiles(data: AppData, start: LocalDate, today: LocalDate) {
             if (change != null) {
                 Tile(
                     "Biggest change",
-                    change.first,
-                    "${fmt1(change.second)} → ${fmt1(change.third)} since ${Logic.pillWord(change.fourth)}",
-                    if (change.third > change.second) BadFill else GoodFill,
+                    change.name,
+                    "${if (change.worse) "Worse" else "Better"} on ${Logic.pillWord(change.high)} than ${Logic.pillWord(change.low)}",
+                    if (change.worse) BadFill else GoodFill,
                     Modifier.weight(1f),
                 )
             } else {
@@ -291,7 +324,7 @@ private fun fmtDuration(min: Int): String = if (min < 60) "$min min" else "${min
 
 private class EndLabel(var y: Float, val text: String, val color: Color)
 
-private data class Change(val first: String, val second: Double, val third: Double, val fourth: Int)
+private data class Change(val name: String, val worse: Boolean, val low: Int, val high: Int)
 
 /** The symptom whose average moved most between your lowest and highest dose (2+ check-ins each). */
 private fun biggestChange(data: AppData): Change? {
@@ -300,14 +333,19 @@ private fun biggestChange(data: AppData): Change? {
     val low = levels.keys.min()
     val high = levels.keys.max()
     var best: Change? = null
+    var bestSize = 0.0
     data.settings.symptoms.filter { it.visible }.forEach { def ->
-        val a = levels[low].orEmpty().mapNotNull { data.checkins[it]?.get(def.id) }
-        val b = levels[high].orEmpty().mapNotNull { data.checkins[it]?.get(def.id) }
+        val a = levels[low].orEmpty().mapNotNull { data.checkins[it]?.get(def.id) }.map { Scales.impact(def, it) }
+        val b = levels[high].orEmpty().mapNotNull { data.checkins[it]?.get(def.id) }.map { Scales.impact(def, it) }
         if (a.size < 2 || b.size < 2) return@forEach
-        val c = Change(def.name, a.average(), b.average(), low)
-        if (best == null || abs(c.third - c.second) > abs(best!!.third - best!!.second)) best = c
+        // Compare as a share of each scale, so mood (1–7) and others (1–10) are fair.
+        val size = abs(b.average() - a.average()) / (Scales.impactMax(def) - 1)
+        if (size > bestSize) {
+            bestSize = size
+            best = Change(def.name, b.average() > a.average(), low, high)
+        }
     }
-    return best?.takeIf { abs(it.third - it.second) >= 0.5 }
+    return if (bestSize >= 0.06) best else null
 }
 
 @Composable
@@ -394,7 +432,7 @@ private fun DoseFeelCard(
             CombinedChart(data, chosen, bands, start, today, xMin, xMax)
             Box(Modifier.padding(start = 8.dp)) { DateEnds(start) }
             Text(
-                "Each line uses its own scale, so compare the shape. Latest values are at the right. Red dots are missed days.",
+                "Each line uses its own scale, so compare the shape. For check-ins, higher always means worse. Latest values are at the right. Red dots are missed days.",
                 style = MaterialTheme.typography.labelSmall,
                 color = mutedText(),
             )
@@ -422,7 +460,7 @@ private fun DoseFeelCard(
                             Series(item.name, if (i == 0) item.color else item.color.copy(alpha = 0.55f), pts, fill = lists.size == 1)
                         }
                         val sym = item.kind == Kind.SYMPTOM
-                        LineChart(series, xMin, xMax, if (sym) 1.0 else null, if (sym) 10.0 else null, 120.dp, bands)
+                        LineChart(series, xMin, xMax, if (sym) 1.0 else null, if (sym) item.max else null, 120.dp, bands)
                         Box(Modifier.padding(start = 34.dp)) { DateEnds(start) }
                     }
                 }
@@ -476,7 +514,7 @@ private fun CombinedChart(
             val allPts = lists.flatten()
             if (allPts.isEmpty()) return@forEach
             val (lo, hi) = if (item.kind == Kind.SYMPTOM) {
-                1.0 to 10.0
+                1.0 to item.max
             } else {
                 val mn = allPts.minOf { it.second }
                 val mx = allPts.maxOf { it.second }
@@ -537,7 +575,7 @@ private fun ByDoseCard(data: AppData) {
     val levels = levelDates(data)
     SectionCard("By dose level", Icons.Filled.TableChart) {
         Text(
-            "Your averages on each dose, across all your data. Red means clearly higher than on your lowest dose.",
+            "Your averages on each dose, across all your data. Check-ins: higher means worse. Red means clearly worse than on your lowest dose.",
             style = MaterialTheme.typography.bodySmall,
             color = mutedText(),
         )
@@ -561,37 +599,45 @@ private fun ByDoseCard(data: AppData) {
         }
 
         fun dayOf(m: Long) = dateOf(m).toString()
-        val rows = mutableListOf<Triple<String, List<Double?>, (Double, Double) -> Boolean>>()
+        val rows = mutableListOf<TableRow>()
+        val oneDecimal = { v: Double -> String.format(java.util.Locale.UK, "%.1f", v) }
+        val whole = { v: Double -> "${Math.round(v)}" }
         data.settings.symptoms.filter { it.visible }.forEach { def ->
-            val avgs = cols.map { lv -> levels[lv].orEmpty().mapNotNull { data.checkins[it]?.get(def.id) }.takeIf { it.isNotEmpty() }?.average() }
-            if (avgs.any { it != null }) rows += Triple(def.name, avgs, { base: Double, v: Double -> v - base >= 1.5 })
+            val avgs = cols.map { lv ->
+                levels[lv].orEmpty().mapNotNull { data.checkins[it]?.get(def.id) }.map { Scales.impact(def, it) }
+                    .takeIf { it.isNotEmpty() }?.average()
+            }
+            if (avgs.any { it != null }) rows += TableRow(Scales.chartName(def), avgs, oneDecimal) { b, v -> Scales.bigRise(def, b, v) }
         }
         fun metricAvg(type: String, pick: (com.rosehanzo.medtracker.data.Metric) -> Double) = cols.map { lv ->
             val set = levels[lv].orEmpty().toSet()
             data.metrics.filter { it.type == type && dayOf(it.time) in set }.map(pick).takeIf { it.isNotEmpty() }?.average()
         }
-        val pulse = metricAvg("pulse") { it.v1 }
-        if (pulse.any { it != null }) rows += Triple("Pulse", pulse, { base: Double, v: Double -> v - base >= 5 })
-        val bpHigh = metricAvg("bp") { it.v1 }
-        if (bpHigh.any { it != null }) rows += Triple("BP upper", bpHigh, { base: Double, v: Double -> v - base >= 5 })
-        val bpLow = metricAvg("bp") { it.v2 }
-        if (bpLow.any { it != null }) rows += Triple("BP lower", bpLow, { base: Double, v: Double -> v - base >= 5 })
-        val weight = metricAvg("weight") { it.v1 }
-        if (weight.any { it != null }) rows += Triple("Weight", weight, { base: Double, v: Double -> base - v >= 1.0 })
+        fun addMetric(name: String, avgs: List<Double?>, fmt: (Double) -> String, flag: (Double, Double) -> Boolean) {
+            if (avgs.any { it != null }) rows += TableRow(name, avgs, fmt, flag)
+        }
+        addMetric("Pulse", metricAvg("pulse") { it.v1 }, whole) { b, v -> v - b >= 5 }
+        addMetric("BP upper", metricAvg("bp") { it.v1 }, whole) { b, v -> v - b >= 5 }
+        addMetric("BP lower", metricAvg("bp") { it.v2 }, whole) { b, v -> v - b >= 5 }
+        addMetric("Weight", metricAvg("weight") { it.v1 }, { fmt1(it) }) { b, v -> b - v >= 1.0 }
+        addMetric("Sleep (hours)", metricAvg("sleep") { it.v1 }, oneDecimal) { b, v -> b - v >= 0.75 }
+        addMetric("Sleeping heart rate", metricAvg("sleephr") { it.v1 }, whole) { b, v -> v - b >= 5 }
+        addMetric("Heart rate after dose", metricAvg("dosehr") { it.v1 }, whole) { b, v -> v - b >= 8 }
+        addMetric("Steps", metricAvg("steps") { it.v1 }, { String.format(java.util.Locale.UK, "%,d", Math.round(it)) }) { _, _ -> false }
 
         if (rows.isEmpty()) {
             Text("No check-ins or readings yet.", style = MaterialTheme.typography.bodySmall, color = mutedText())
             return@SectionCard
         }
-        rows.forEach { (name, avgs, flag) ->
+        rows.forEach { row ->
             androidx.compose.material3.HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f))
             Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                Text(name, style = MaterialTheme.typography.bodyMedium, modifier = Modifier.weight(1.6f), maxLines = 1)
-                val base = avgs.firstOrNull { it != null }
-                avgs.forEachIndexed { i, v ->
-                    val flagged = v != null && base != null && i > 0 && flag(base, v)
+                Text(row.name, style = MaterialTheme.typography.bodyMedium, modifier = Modifier.weight(1.6f), maxLines = 2)
+                val base = row.avgs.firstOrNull { it != null }
+                row.avgs.forEachIndexed { i, v ->
+                    val flagged = v != null && base != null && i > 0 && row.flag(base, v)
                     Text(
-                        v?.let { if (name == "Weight") fmt1(it) else if (name.startsWith("BP") || name == "Pulse") "${it.toInt()}" else String.format(java.util.Locale.UK, "%.1f", it) } ?: "–",
+                        v?.let(row.fmt) ?: "–",
                         style = MaterialTheme.typography.bodyMedium,
                         fontWeight = if (flagged) FontWeight.SemiBold else FontWeight.Normal,
                         color = if (flagged) badText() else MaterialTheme.colorScheme.onSurface,
@@ -603,6 +649,13 @@ private fun ByDoseCard(data: AppData) {
         }
     }
 }
+
+private class TableRow(
+    val name: String,
+    val avgs: List<Double?>,
+    val fmt: (Double) -> String,
+    val flag: (Double, Double) -> Boolean,
+)
 
 @Composable
 private fun DateEnds(start: LocalDate) {

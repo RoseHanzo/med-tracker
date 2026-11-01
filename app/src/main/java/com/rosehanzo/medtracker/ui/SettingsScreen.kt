@@ -719,7 +719,7 @@ private fun TrackingSection(s: Settings) {
                 Column(Modifier.weight(1f)) {
                     Text(def.name, style = MaterialTheme.typography.bodyLarge)
                     Text(
-                        "1 = ${def.low.lowercase()} · 10 = ${def.high.lowercase()}",
+                        "${def.low} → ${def.high}",
                         style = MaterialTheme.typography.labelSmall,
                         color = mutedText(),
                     )
@@ -756,7 +756,7 @@ private fun TrackingSection(s: Settings) {
                         singleLine = true,
                     )
                     Text(
-                        "Rated 1 = none to 10 = severe, like everything else. Name it so more is worse, e.g. \"Low motivation\".",
+                        "Logged on a bar from None to Severe. Name it so more is worse, e.g. \"Low motivation\".",
                         style = MaterialTheme.typography.bodySmall,
                         color = mutedText(),
                     )
@@ -806,7 +806,7 @@ private fun HealthSection(s: Settings) {
             HealthConnectClient.SDK_AVAILABLE -> {
                 if (granted.isEmpty()) {
                     Text(
-                        "Bring in weight, blood pressure and heart rate from your watch and scale automatically.",
+                        "Bring in weight, blood pressure, heart rate, sleep and steps from your watch and scale automatically.",
                         style = MaterialTheme.typography.bodyMedium,
                     )
                     Button(onClick = { launcher.launch(HealthSync.PERMISSIONS) }, modifier = Modifier.fillMaxWidth()) {
@@ -817,8 +817,17 @@ private fun HealthSection(s: Settings) {
                         "weight".takeIf { HealthSync.WEIGHT in granted },
                         "blood pressure".takeIf { HealthSync.BLOOD_PRESSURE in granted },
                         "heart rate".takeIf { HealthSync.HEART_RATE in granted },
+                        "sleep".takeIf { HealthSync.SLEEP in granted },
+                        "steps".takeIf { HealthSync.STEPS in granted },
                     )
                     Text("Connected: ${parts.joinToString(", ")}", style = MaterialTheme.typography.bodyMedium, color = goodText())
+                    if (granted.size < HealthSync.PERMISSIONS.size) {
+                        Text(
+                            "Tap Permissions to allow the rest. Sleep and steps are new.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = TodayFill,
+                        )
+                    }
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                         Button(
                             onClick = {
@@ -869,7 +878,7 @@ private fun HealthSection(s: Settings) {
                 checkRows?.let { rows -> HealthCheckResults(rows, s.hcLastSync) }
                 Text(
                     "Samsung Health has to share with Health Connect too: in Samsung Health, open Settings, " +
-                        "then Health Connect, and allow weight, blood pressure and heart rate. " +
+                        "then Health Connect, and allow weight, blood pressure, heart rate, sleep and steps. " +
                         "Samsung keeps stress scores inside Samsung Health, so other apps can't read them.",
                     style = MaterialTheme.typography.bodySmall,
                     color = mutedText(),

@@ -8,23 +8,29 @@ import org.json.JSONObject
 import java.io.File
 import java.time.LocalDate
 
-/** One thing rated 1–10 in the daily check-in. */
+/** How a check-in bar runs. Saved values are always the bar position, 1 = left end. */
+const val SCALE_IMPACT = "impact" // 1..10: left = normal/none, right = worst
+const val SCALE_GOOD = "good"     // 1..10: left = worst, right = best
+const val SCALE_MOOD = "mood7"    // 1..7: left = very bad, 4 = normal, right = excellent
+
+/** One thing rated in the daily check-in. [low] and [high] label the left and right ends of the bar. */
 data class SymptomDef(
     val id: String,
     val name: String,
     val low: String,
     val high: String,
+    /** Only used to read data saved before version 3. */
     val highIsGood: Boolean = false,
     val visible: Boolean = true,
     val custom: Boolean = false,
+    val scale: String = SCALE_IMPACT,
 )
 
 val DEFAULT_SYMPTOMS = listOf(
-    // Every scale runs from 1 = no impact to 10 = the most impact.
-    SymptomDef("mood", "Low mood", "None", "Severe"),
-    SymptomDef("focus", "Low focus / energy", "None", "Severe"),
-    SymptomDef("appetite", "Low appetite", "None", "Severe"),
-    SymptomDef("sleep", "Poor sleep", "None", "Severe"),
+    SymptomDef("mood", "Mood", "Very bad", "Excellent", scale = SCALE_MOOD),
+    SymptomDef("focus", "Focus / energy", "Very low", "Great", scale = SCALE_GOOD),
+    SymptomDef("appetite", "Low appetite", "Normal", "No appetite"),
+    SymptomDef("sleep", "Poor sleep", "Normal", "Barely slept"),
     SymptomDef("chest", "Chest tightness", "None", "Severe"),
     SymptomDef("drymouth", "Dry mouth", "None", "Severe"),
     SymptomDef("headache", "Headache", "None", "Severe"),
@@ -203,6 +209,7 @@ object Codec {
             x.put("low", it.low)
             x.put("high", it.high)
             x.put("highIsGood", it.highIsGood)
+            x.put("scale", it.scale)
             x.put("visible", it.visible)
             x.put("custom", it.custom)
             syms.put(x)
@@ -246,7 +253,7 @@ object Codec {
         }
 
         val root = JSONObject()
-        root.put("version", 3)
+        root.put("version", 4)
         root.put("forms", forms)
         root.put("missed", JSONArray(d.missed.toList()))
         val orders = JSONArray()
@@ -279,6 +286,7 @@ object Codec {
                     low = x.optString("low"),
                     high = x.optString("high"),
                     highIsGood = x.optBoolean("highIsGood", false),
+                    scale = x.optString("scale", SCALE_IMPACT),
                     visible = x.optBoolean("visible", true),
                     custom = x.optBoolean("custom", false),
                 )
@@ -387,7 +395,9 @@ object Codec {
         } ?: emptyList()
 
         val loaded = AppData(settings, doses, checkins, metrics.sortedBy { it.time }, forms, missed, orders)
-        return if (o.optInt("version", 1) < 3) alignScales(loaded) else loaded
+        val version = o.optInt("version", 1)
+        val v3 = if (version < 3) alignScales(loaded) else loaded
+        return if (version < 4) toBarScales(v3) else v3
     }
 
     /**
@@ -395,6 +405,34 @@ object Codec {
      * runs 1 = no impact to 10 = most impact, so those items are renamed and their
      * saved ratings flipped (v becomes 11 - v).
      */
+    /**
+     * Version 4: check-ins are saved as bar positions. Every tracker (shown or hidden) gets
+     * its new labels and scale, and saved ratings are converted:
+     *  - Mood (was "Low mood", 1 = none … 10 = severe) moves to 1 = very bad … 7 = excellent,
+     *    estimated as round(7 - (v - 1) × 6 / 9).
+     *  - Focus / energy (was "Low focus", 1 = none … 10 = severe) flips to 1 = very low … 10 = great.
+     *  - Everything else keeps its numbers (still 1 = none … 10 = severe).
+     */
+    private fun toBarScales(d: AppData): AppData {
+        val symptoms = d.settings.symptoms.map { def ->
+            val fresh = DEFAULT_SYMPTOMS.firstOrNull { it.id == def.id }
+            when {
+                fresh != null -> def.copy(name = fresh.name, low = fresh.low, high = fresh.high, scale = fresh.scale)
+                else -> def.copy(low = "None", high = "Severe", scale = SCALE_IMPACT)
+            }
+        }
+        val checkins = d.checkins.mapValues { (_, values) ->
+            values.mapValues { (id, v) ->
+                when (id) {
+                    "mood" -> Math.round(7.0 - (v - 1) * 6.0 / 9.0).toInt().coerceIn(1, 7)
+                    "focus" -> (11 - v).coerceIn(1, 10)
+                    else -> v
+                }
+            }
+        }
+        return d.copy(settings = d.settings.copy(symptoms = symptoms), checkins = checkins)
+    }
+
     private fun alignScales(d: AppData): AppData {
         val flip = d.settings.symptoms.filter { it.highIsGood }.map { it.id }.toSet()
         if (flip.isEmpty()) return d
