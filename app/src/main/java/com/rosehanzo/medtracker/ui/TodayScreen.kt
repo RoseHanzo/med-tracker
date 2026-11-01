@@ -80,28 +80,12 @@ fun TodayScreen(data: AppData) {
 
 @Composable
 private fun UpdateBanner() {
-    val ctx = LocalContext.current
-    val scope = rememberCoroutineScope()
     val state by Updater.state.collectAsState()
-    val ready = state as? Updater.State.Ready ?: return
+    val st = state
+    if (st !is Updater.State.Ready && st !is Updater.State.Downloading && st !is Updater.State.Downloaded) return
 
     SectionCard("A new version is ready", Icons.Filled.SystemUpdate) {
-        Text(
-            "Build ${ready.update.build} is available. Your data stays as it is.",
-            style = MaterialTheme.typography.bodyMedium,
-            color = mutedText(),
-        )
-        Button(
-            onClick = {
-                if (!Updater.canInstall(ctx)) {
-                    toast(ctx, "Allow Cadence to install updates, then tap Update again")
-                    Updater.openInstallPermission(ctx)
-                } else {
-                    scope.launch { Updater.downloadAndInstall(ctx, ready.update) }
-                }
-            },
-            modifier = Modifier.fillMaxWidth(),
-        ) { Text("Update now") }
+        UpdateControls(st)
     }
 }
 

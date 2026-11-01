@@ -1,15 +1,11 @@
 package com.rosehanzo.medtracker.update
 
-import android.app.PendingIntent
-import android.content.BroadcastReceiver
+import android.content.ActivityNotFoundException
 import android.content.Context
 import android.content.Intent
-import android.content.pm.PackageInstaller
 import android.net.Uri
-import android.os.Build
 import android.provider.Settings
-import android.widget.Toast
-import androidx.core.content.IntentCompat
+import androidx.core.content.FileProvider
 import com.rosehanzo.medtracker.BuildConfig
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -22,7 +18,8 @@ import java.net.URL
 
 /**
  * One-tap updates from the app's GitHub releases.
- * Every build is published to the "latest" release with the title "Cadence build N".
+ * Every build is published to the "latest" release with a version.json and the title "Cadence build N".
+ * The repository has to be public while checking and downloading.
  */
 object Updater {
     private const val RELEASE_API = "https://api.github.com/repos/RoseHanzo/med-tracker/releases/tags/latest"
@@ -38,7 +35,8 @@ object Updater {
         data object UpToDate : State()
         data class Ready(val update: Available) : State()
         data class Downloading(val percent: Int) : State()
-        data object Installing : State()
+        /** Downloaded and handed to Android's installer. [path] lets the user reopen it. */
+        data class Downloaded(val build: Int, val path: String) : State()
         data class Failed(val message: String) : State()
     }
 
@@ -52,7 +50,8 @@ object Updater {
     suspend fun check(force: Boolean = false) {
         val now = System.currentTimeMillis()
         if (!force && now - lastCheck < 3 * 60 * 60 * 1000L) return
-        if (_state.value is State.Downloading || _state.value is State.Installing) return
+        val busy = _state.value
+        if (busy is State.Downloading || busy is State.Downloaded) return
         lastCheck = now
         _state.value = State.Checking
         _state.value = try {
@@ -96,6 +95,7 @@ object Updater {
         conn.setRequestProperty("Accept", "application/json")
         try {
             val code = conn.responseCode
+            if (code == 404) error("not found, is the repository public?")
             if (code != 200) error("GitHub replied $code")
             return conn.inputStream.bufferedReader().readText()
         } finally {
@@ -112,25 +112,51 @@ object Updater {
         runCatching { ctx.startActivity(i) }
     }
 
+    /** Call with the Activity context so Android's install screen can open on top of the app. */
     suspend fun downloadAndInstall(ctx: Context, update: Available) {
-        try {
+        val file = try {
             _state.value = State.Downloading(0)
-            val file = download(ctx, update.url)
-            _state.value = State.Installing
-            install(ctx, file)
+            download(ctx, update.url)
         } catch (e: Exception) {
-            _state.value = State.Failed("The update didn't download. Try again in a moment.")
+            _state.value = State.Failed("The update didn't download (${e.message ?: "no connection"}). Try again.")
+            return
+        }
+        _state.value = State.Downloaded(update.build, file.path)
+        openInstaller(ctx, file)
+    }
+
+    /** Opens Android's own "update this app?" screen for the downloaded file. */
+    fun openInstaller(ctx: Context, file: File) {
+        if (!file.exists()) {
+            _state.value = State.Failed("The downloaded update is missing. Check for updates again.")
+            return
+        }
+        val uri = FileProvider.getUriForFile(ctx, "${ctx.packageName}.updates", file)
+        val intent = Intent(Intent.ACTION_VIEW)
+            .setDataAndType(uri, "application/vnd.android.package-archive")
+            .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_ACTIVITY_NEW_TASK)
+        try {
+            ctx.startActivity(intent)
+        } catch (e: ActivityNotFoundException) {
+            _state.value = State.Failed("Android's installer didn't open. Download Cadence.apk from GitHub instead.")
+        } catch (e: SecurityException) {
+            _state.value = State.Failed("Allow Cadence to install apps, then tap Install.")
         }
     }
 
     private suspend fun download(ctx: Context, url: String): File = withContext(Dispatchers.IO) {
-        val out = File(ctx.cacheDir, "update.apk")
+        val dir = File(ctx.cacheDir, "updates").apply { mkdirs() }
+        val out = File(dir, "Cadence.apk")
         val conn = URL(url).openConnection() as HttpURLConnection
         conn.instanceFollowRedirects = true
         conn.connectTimeout = 15_000
         conn.readTimeout = 30_000
+        conn.useCaches = false
+        conn.setRequestProperty("User-Agent", "Cadence/$currentBuild (Android)")
         try {
-            if (conn.responseCode != 200) error("HTTP ${conn.responseCode}")
+            val code = conn.responseCode
+            if (code == 404) error("not found, is the repository public?")
+            if (code != 200) error("GitHub replied $code")
             val total = conn.contentLengthLong
             var done = 0L
             conn.inputStream.use { input ->
@@ -149,54 +175,5 @@ object Updater {
             conn.disconnect()
         }
         out
-    }
-
-    private suspend fun install(ctx: Context, apk: File) = withContext(Dispatchers.IO) {
-        val installer = ctx.packageManager.packageInstaller
-        val params = PackageInstaller.SessionParams(PackageInstaller.SessionParams.MODE_FULL_INSTALL)
-        params.setAppPackageName(ctx.packageName)
-        if (Build.VERSION.SDK_INT >= 31) {
-            // Once Cadence has installed itself, later updates can go through without a prompt.
-            params.setRequireUserAction(PackageInstaller.SessionParams.USER_ACTION_NOT_REQUIRED)
-        }
-        val id = installer.createSession(params)
-        installer.openSession(id).use { session ->
-            session.openWrite("cadence.apk", 0, apk.length()).use { out ->
-                apk.inputStream().use { it.copyTo(out) }
-                session.fsync(out)
-            }
-            val flags = if (Build.VERSION.SDK_INT >= 31) {
-                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_MUTABLE
-            } else {
-                PendingIntent.FLAG_UPDATE_CURRENT
-            }
-            val callback = PendingIntent.getBroadcast(ctx, 7, Intent(ctx, InstallReceiver::class.java), flags)
-            session.commit(callback.intentSender)
-        }
-    }
-
-    internal fun onInstallResult(ctx: Context, intent: Intent) {
-        when (intent.getIntExtra(PackageInstaller.EXTRA_STATUS, PackageInstaller.STATUS_FAILURE)) {
-            PackageInstaller.STATUS_PENDING_USER_ACTION -> {
-                val confirm = IntentCompat.getParcelableExtra(intent, Intent.EXTRA_INTENT, Intent::class.java)
-                if (confirm != null) {
-                    confirm.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                    runCatching { ctx.startActivity(confirm) }
-                }
-            }
-            PackageInstaller.STATUS_SUCCESS -> _state.value = State.Idle
-            PackageInstaller.STATUS_FAILURE_ABORTED -> _state.value = State.Idle
-            else -> {
-                val msg = intent.getStringExtra(PackageInstaller.EXTRA_STATUS_MESSAGE) ?: "unknown error"
-                _state.value = State.Failed("The update couldn't install ($msg).")
-                Toast.makeText(ctx, "Update failed: $msg", Toast.LENGTH_LONG).show()
-            }
-        }
-    }
-}
-
-class InstallReceiver : BroadcastReceiver() {
-    override fun onReceive(context: Context, intent: Intent) {
-        Updater.onInstallResult(context, intent)
     }
 }

@@ -721,6 +721,52 @@ private fun HealthSection(s: Settings) {
 
 // ---------- Updates ----------
 
+/** Update button, progress and Install button. Shared by Settings and the Today banner. */
+@Composable
+fun UpdateControls(state: Updater.State) {
+    val ctx = LocalContext.current
+    val scope = rememberCoroutineScope()
+    when (state) {
+        is Updater.State.Ready -> {
+            Text("Build ${state.update.build} is ready. Your data stays as it is.", style = MaterialTheme.typography.bodySmall, color = goodText())
+            Button(
+                onClick = {
+                    if (!Updater.canInstall(ctx)) {
+                        toast(ctx, "Allow Cadence to install apps, then come back and tap Update again")
+                        Updater.openInstallPermission(ctx)
+                    } else {
+                        scope.launch { Updater.downloadAndInstall(ctx, state.update) }
+                    }
+                },
+                modifier = Modifier.fillMaxWidth(),
+            ) { Text("Update now") }
+        }
+        is Updater.State.Downloading -> {
+            Text("Downloading… ${state.percent}%", style = MaterialTheme.typography.bodySmall, color = mutedText())
+            LinearProgressIndicator(progress = { state.percent / 100f }, modifier = Modifier.fillMaxWidth())
+        }
+        is Updater.State.Downloaded -> {
+            Text(
+                "Build ${state.build} is downloaded. Tap Install, then Update on Android's screen.",
+                style = MaterialTheme.typography.bodySmall,
+                color = mutedText(),
+            )
+            Button(
+                onClick = {
+                    if (!Updater.canInstall(ctx)) {
+                        toast(ctx, "Allow Cadence to install apps, then come back and tap Install")
+                        Updater.openInstallPermission(ctx)
+                    } else {
+                        Updater.openInstaller(ctx, java.io.File(state.path))
+                    }
+                },
+                modifier = Modifier.fillMaxWidth(),
+            ) { Text("Install") }
+        }
+        else -> {}
+    }
+}
+
 @Composable
 private fun UpdateSection() {
     val ctx = LocalContext.current
@@ -732,29 +778,11 @@ private fun UpdateSection() {
         when (val st = state) {
             is Updater.State.Checking -> Text("Checking…", style = MaterialTheme.typography.bodySmall, color = mutedText())
             is Updater.State.UpToDate -> Text("You have the latest version.", style = MaterialTheme.typography.bodySmall, color = goodText())
-            is Updater.State.Ready -> {
-                Text("Build ${st.update.build} is ready to install.", style = MaterialTheme.typography.bodySmall, color = goodText())
-                Button(
-                    onClick = {
-                        if (!Updater.canInstall(ctx)) {
-                            toast(ctx, "Allow Cadence to install updates, then tap Update again")
-                            Updater.openInstallPermission(ctx)
-                        } else {
-                            scope.launch { Updater.downloadAndInstall(ctx, st.update) }
-                        }
-                    },
-                    modifier = Modifier.fillMaxWidth(),
-                ) { Text("Update now") }
-            }
-            is Updater.State.Downloading -> {
-                Text("Downloading… ${st.percent}%", style = MaterialTheme.typography.bodySmall, color = mutedText())
-                LinearProgressIndicator(progress = { st.percent / 100f }, modifier = Modifier.fillMaxWidth())
-            }
-            is Updater.State.Installing -> Text("Installing… confirm on the screen that appears.", style = MaterialTheme.typography.bodySmall, color = mutedText())
+            is Updater.State.Ready, is Updater.State.Downloading, is Updater.State.Downloaded -> UpdateControls(st)
             is Updater.State.Failed -> Text(st.message, style = MaterialTheme.typography.bodySmall, color = badText())
             is Updater.State.Idle -> {}
         }
-        if (state !is Updater.State.Downloading && state !is Updater.State.Installing && state !is Updater.State.Ready) {
+        if (state !is Updater.State.Downloading && state !is Updater.State.Downloaded && state !is Updater.State.Ready) {
             OutlinedButton(onClick = { scope.launch { Updater.check(force = true) } }, modifier = Modifier.fillMaxWidth()) {
                 Text("Check for updates")
             }
