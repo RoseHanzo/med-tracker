@@ -26,6 +26,9 @@ import java.net.URL
  */
 object Updater {
     private const val RELEASE_API = "https://api.github.com/repos/RoseHanzo/med-tracker/releases/tags/latest"
+    private const val DOWNLOADS = "https://github.com/RoseHanzo/med-tracker/releases/download/latest"
+    private const val VERSION_URL = "$DOWNLOADS/version.json"
+    private const val APK_URL = "$DOWNLOADS/Cadence.apk"
 
     data class Available(val build: Int, val url: String)
 
@@ -54,30 +57,47 @@ object Updater {
         _state.value = State.Checking
         _state.value = try {
             val found = fetchLatest()
-            if (found != null && found.build > currentBuild) State.Ready(found) else State.UpToDate
+            if (found.build > currentBuild) State.Ready(found) else State.UpToDate
         } catch (e: Exception) {
-            if (force) State.Failed("Couldn't check for updates. Are you online?") else State.Idle
+            // Never report "up to date" when the check itself failed.
+            if (force) State.Failed("Couldn't check for updates (${e.message ?: "no connection"}).") else State.Idle
         }
     }
 
-    private suspend fun fetchLatest(): Available? = withContext(Dispatchers.IO) {
-        val conn = URL(RELEASE_API).openConnection() as HttpURLConnection
-        conn.connectTimeout = 10_000
-        conn.readTimeout = 10_000
-        conn.setRequestProperty("Accept", "application/vnd.github+json")
+    /**
+     * Reads version.json from the release downloads first: it isn't subject to the API's
+     * limit on anonymous requests, which shared mobile networks often hit.
+     * Falls back to the GitHub API.
+     */
+    private suspend fun fetchLatest(): Available = withContext(Dispatchers.IO) {
         try {
-            if (conn.responseCode != 200) return@withContext null
-            val json = JSONObject(conn.inputStream.bufferedReader().readText())
+            val json = JSONObject(getText(VERSION_URL))
+            Available(json.getInt("build"), APK_URL)
+        } catch (first: Exception) {
+            val json = try {
+                JSONObject(getText(RELEASE_API))
+            } catch (second: Exception) {
+                throw IllegalStateException(second.message ?: first.message ?: "unknown error")
+            }
             val title = json.optString("name")
             val build = Regex("build\\s+(\\d+)", RegexOption.IGNORE_CASE).find(title)
-                ?.groupValues?.get(1)?.toIntOrNull() ?: return@withContext null
-            val assets = json.optJSONArray("assets") ?: return@withContext null
-            var url: String? = null
-            for (i in 0 until assets.length()) {
-                val a = assets.getJSONObject(i)
-                if (a.optString("name").endsWith(".apk")) url = a.optString("browser_download_url")
-            }
-            url?.let { Available(build, it) }
+                ?.groupValues?.get(1)?.toIntOrNull() ?: error("no build number on GitHub")
+            Available(build, APK_URL)
+        }
+    }
+
+    private fun getText(url: String): String {
+        val conn = URL(url).openConnection() as HttpURLConnection
+        conn.connectTimeout = 10_000
+        conn.readTimeout = 10_000
+        conn.useCaches = false
+        conn.instanceFollowRedirects = true
+        conn.setRequestProperty("User-Agent", "Cadence/$currentBuild (Android)")
+        conn.setRequestProperty("Accept", "application/json")
+        try {
+            val code = conn.responseCode
+            if (code != 200) error("GitHub replied $code")
+            return conn.inputStream.bufferedReader().readText()
         } finally {
             conn.disconnect()
         }
