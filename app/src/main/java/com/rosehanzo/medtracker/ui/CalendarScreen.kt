@@ -113,7 +113,8 @@ val TodayFill = Color(0xFFF08A24)
 private val FormBlue = Color(0xFF4A90E2)
 
 private fun markFor(data: AppData, date: LocalDate, today: LocalDate): Mark? {
-    if (date.isAfter(today)) return if (Logic.planFor(data.settings, date).pills > 0) Mark.PLANNED else null
+    // Future days only show what a phase actually covers; carry-on applies once the day arrives.
+    if (date.isAfter(today)) return if (Logic.explicitPlanFor(data.settings, date).pills > 0) Mark.PLANNED else null
     return when (Logic.dayStatus(data, date)) {
         DayStatus.TAKEN -> Mark.TAKEN
         DayStatus.MISSED -> Mark.MISSED
@@ -236,7 +237,7 @@ private fun MonthGrid(data: AppData, month: YearMonth, selected: LocalDate, onPi
                         DayCell(
                             date = date,
                             mark = mark,
-                            pills = dose?.pills ?: Logic.planFor(data.settings, date).pills,
+                            pills = dose?.pills ?: (if (date.isAfter(today)) Logic.explicitPlanFor(data.settings, date) else Logic.planFor(data.settings, date)).pills,
                             check = checkFor(data, date, today, mark),
                             form = formMarkFor(data, date, today),
                             isSelected = date == selected,
@@ -358,7 +359,7 @@ private fun DayDetails(data: AppData, date: LocalDate) {
     val ctx = LocalContext.current
     val s = data.settings
     val today = LocalDate.now()
-    val plan = Logic.planFor(s, date)
+    val plan = if (date.isAfter(today)) Logic.explicitPlanFor(s, date) else Logic.planFor(s, date)
     val dose = data.doses[date.toString()]
     val checkin = data.checkins[date.toString()].orEmpty()
     val metrics = data.metrics.filter { dateOf(it.time) == date }
@@ -372,6 +373,8 @@ private fun DayDetails(data: AppData, date: LocalDate) {
                 dose != null -> "${Logic.pillWord(dose.pills)} taken at ${timeOf(dose.time)}"
                 status == DayStatus.MISSED -> "${Logic.pillWord(plan.pills)} marked as missed"
                 plan.pills == 0 && plan.phase != null -> "Day off"
+                plan.pills == 0 && date.isAfter(today) && Logic.planFor(s, date).pills > 0 ->
+                    "No phase covers this day yet. If it's still unplanned when it comes, your latest amount carries on."
                 plan.pills == 0 -> "Nothing planned"
                 date.isAfter(today) -> "${Logic.pillWord(plan.pills)} planned at ${Logic.fmtTime(Logic.doseMinutes(s, date))}"
                 date == today -> "${Logic.pillWord(plan.pills)} due at ${Logic.fmtTime(Logic.doseMinutes(s, date))}"

@@ -32,6 +32,19 @@ object Logic {
         return sortedPhases(s).lastOrNull { it.start <= key }
     }
 
+    /**
+     * What a phase explicitly covers on [date], ignoring the carry-on rule: used to show
+     * future days in the calendar. A day past a phase's end date with no later phase has
+     * no plan yet; it only picks up the latest amount once it arrives.
+     */
+    fun explicitPlanFor(s: Settings, date: LocalDate): PlanDay {
+        val key = date.toString()
+        val phase = sortedPhases(s).lastOrNull { it.start <= key && (it.end == null || key <= it.end) }
+            ?: return PlanDay(0, null, false)
+        val off = date.dayOfWeek.value in phase.daysOff
+        return PlanDay(if (off) 0 else phase.pills, phase, off)
+    }
+
     fun planFor(s: Settings, date: LocalDate): PlanDay {
         val phase = phaseFor(s, date) ?: return PlanDay(0, null, false)
         val off = date.dayOfWeek.value in phase.daysOff
