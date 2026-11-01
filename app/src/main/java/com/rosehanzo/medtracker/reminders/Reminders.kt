@@ -192,7 +192,7 @@ object Reminders {
         val text = "Due at $due. I'll remind you every ${s.nagMinutes} min until you tap Taken."
         val title = if (pills == 1) "1 new task due today" else "$pills new tasks due today"
         val n = NotificationCompat.Builder(ctx, CH_DOSE)
-            .setSmallIcon(R.drawable.ic_task)
+            .setSmallIcon(R.drawable.ic_pill)
             .setContentTitle(title)
             .setContentText(text)
             .setStyle(NotificationCompat.BigTextStyle().bigText(text))
@@ -228,7 +228,7 @@ object Reminders {
             "Enough left for about $days days. Time to restock."
         }
         val n = NotificationCompat.Builder(ctx, CH_STOCK)
-            .setSmallIcon(R.drawable.ic_task)
+            .setSmallIcon(R.drawable.ic_pill)
             .setContentTitle("Supplies running low")
             .setContentText(text)
             .setStyle(NotificationCompat.BigTextStyle().bigText(text))
@@ -246,7 +246,7 @@ object Reminders {
         val nmc = NotificationManagerCompat.from(ctx)
         if (!nmc.areNotificationsEnabled()) return false
         val n = NotificationCompat.Builder(ctx, CH_DOSE)
-            .setSmallIcon(R.drawable.ic_task)
+            .setSmallIcon(R.drawable.ic_pill)
             .setContentTitle("1 new task due today")
             .setContentText("Test reminder: this is how your reminders will look and sound.")
             .setPriority(NotificationCompat.PRIORITY_HIGH)
