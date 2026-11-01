@@ -39,6 +39,9 @@ object Reminders {
     const val ACTION_TAKE = "com.rosehanzo.medtracker.action.TAKE"
     const val EXTRA_DATE = "date"
 
+    const val ACTION_ORDERED = "com.rosehanzo.medtracker.action.ORDERED"
+    private const val REQ_ORDERED = 320
+
     const val ACTION_FORM_DUE = "com.rosehanzo.medtracker.action.FORM_DUE"
     const val ACTION_FORM_NAG = "com.rosehanzo.medtracker.action.FORM_NAG"
     const val ACTION_FORM_DONE = "com.rosehanzo.medtracker.action.FORM_DONE"
@@ -349,6 +352,7 @@ object Reminders {
     }
 
     fun checkStock(ctx: Context) {
+        Logic.refreshOrders(ctx)
         val d = Store.data(ctx)
         val s = d.settings
         if (s.pillsLeft < 0) return
@@ -371,6 +375,14 @@ object Reminders {
             .setStyle(NotificationCompat.BigTextStyle().bigText(text))
             .setColor(BRAND)
             .setAutoCancel(true)
+            .addAction(
+                R.drawable.ic_check,
+                "Ordered",
+                PendingIntent.getBroadcast(
+                    ctx, REQ_ORDERED, alarmIntent(ctx, ACTION_ORDERED, null),
+                    PendingIntent.FLAG_UPDATE_CURRENT or IMMUTABLE,
+                ),
+            )
             .build()
         try {
             nmc.notify(STOCK_ID, n)
@@ -408,6 +420,10 @@ class AlarmReceiver : BroadcastReceiver() {
                 Logic.markTaken(context, date)
             }
             Reminders.ACTION_DUE, Reminders.ACTION_NAG -> Reminders.onAlarm(context, intent)
+            Reminders.ACTION_ORDERED -> {
+                Logic.markOpenOrdered(context)
+                androidx.core.app.NotificationManagerCompat.from(context).cancel(2000)
+            }
             Reminders.ACTION_FORM_DONE -> {
                 val date = intent.getStringExtra(Reminders.EXTRA_DATE)
                     ?.let { runCatching { LocalDate.parse(it) }.getOrNull() } ?: LocalDate.now()

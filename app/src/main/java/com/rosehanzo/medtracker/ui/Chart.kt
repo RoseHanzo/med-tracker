@@ -28,6 +28,11 @@ data class Series(
     val fill: Boolean = true,
 )
 
+/** A stretch of days at one dose level, drawn as a shaded band behind charts. */
+data class Band(val x0: Double, val x1: Double, val pills: Int)
+
+fun bandColor(pills: Int): Color = GoodFill.copy(alpha = 0.06f + 0.06f * pills.coerceIn(1, 4))
+
 /** Simple line chart with a soft fill. x values are day numbers (see [dayX]). */
 @Composable
 fun LineChart(
@@ -37,6 +42,7 @@ fun LineChart(
     yMin: Double? = null,
     yMax: Double? = null,
     height: Dp = 170.dp,
+    bands: List<Band> = emptyList(),
 ) {
     val measurer = rememberTextMeasurer()
     val labelStyle = TextStyle(fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
@@ -66,6 +72,12 @@ fun LineChart(
 
         fun x(v: Double) = left + ((v - xMin) / xSpan).toFloat() * (right - left)
         fun y(v: Double) = bottom - ((v - lo) / (hi - lo)).toFloat() * (bottom - top)
+
+        bands.forEach { b ->
+            val x0 = x(b.x0).coerceIn(left, right)
+            val x1 = x(b.x1).coerceIn(left, right)
+            if (x1 > x0) drawRect(bandColor(b.pills), Offset(x0, top), androidx.compose.ui.geometry.Size(x1 - x0, bottom - top))
+        }
 
         val dash = PathEffect.dashPathEffect(floatArrayOf(6f, 8f))
         for (k in 0..2) {

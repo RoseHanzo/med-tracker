@@ -67,7 +67,12 @@ data class Settings(
     val hcLastSync: Long = 0L,
     val startDate: String = LocalDate.now().toString(),
     val stockWarnDate: String = "",
+    /** Date the pill count was last set or topped up. */
+    val lastRefill: String = "",
 )
+
+/** A reminder to order more pills: [due] is the day supply reached the warning level. */
+data class OrderEvent(val due: String, val done: String? = null)
 
 /**
  * A form to fill in. Occurs on [start] and then every [everyWeeks] weeks (0 = once).
@@ -106,6 +111,7 @@ data class AppData(
     val forms: List<FormReminder> = emptyList(),
     /** Dates (yyyy-MM-dd) you marked as missed. */
     val missed: Set<String> = emptySet(),
+    val orders: List<OrderEvent> = emptyList(),
 )
 
 fun defaultSettings(): Settings {
@@ -188,6 +194,7 @@ object Codec {
         so.put("hcLastSync", s.hcLastSync)
         so.put("startDate", s.startDate)
         so.put("stockWarnDate", s.stockWarnDate)
+        so.put("lastRefill", s.lastRefill)
         val syms = JSONArray()
         s.symptoms.forEach {
             val x = JSONObject()
@@ -242,6 +249,13 @@ object Codec {
         root.put("version", 3)
         root.put("forms", forms)
         root.put("missed", JSONArray(d.missed.toList()))
+        val orders = JSONArray()
+        d.orders.forEach {
+            val x = JSONObject().put("due", it.due)
+            if (it.done != null) x.put("done", it.done)
+            orders.put(x)
+        }
+        root.put("orders", orders)
         root.put("settings", so)
         root.put("doses", doses)
         root.put("checkins", checkins)
@@ -308,6 +322,7 @@ object Codec {
             hcLastSync = so.optLong("hcLastSync", 0L),
             startDate = startDate,
             stockWarnDate = so.optString("stockWarnDate", ""),
+            lastRefill = so.optString("lastRefill", ""),
         )
 
         val doses = mutableMapOf<String, DoseTaken>()
@@ -364,7 +379,14 @@ object Codec {
 
         val missed = o.optJSONArray("missed")?.let { a -> List(a.length()) { a.getString(it) }.toSet() } ?: emptySet()
 
-        val loaded = AppData(settings, doses, checkins, metrics.sortedBy { it.time }, forms, missed)
+        val orders = o.optJSONArray("orders")?.let { a ->
+            List(a.length()) { i ->
+                val x = a.getJSONObject(i)
+                OrderEvent(x.getString("due"), if (x.has("done") && !x.isNull("done")) x.getString("done") else null)
+            }
+        } ?: emptyList()
+
+        val loaded = AppData(settings, doses, checkins, metrics.sortedBy { it.time }, forms, missed, orders)
         return if (o.optInt("version", 1) < 3) alignScales(loaded) else loaded
     }
 

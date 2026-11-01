@@ -76,6 +76,7 @@ fun TodayScreen(data: AppData) {
         ScreenTitle("Cadence", longDate(today))
         UpdateBanner()
         DoseHero(data, today)
+        OrderCard(data)
         FormsTodayCard(data, today)
         CheckInCard(data, today)
         MeasureCard(data)
@@ -91,6 +92,30 @@ private fun UpdateBanner() {
 
     SectionCard("A new version is ready", Icons.Filled.SystemUpdate) {
         UpdateControls(st)
+    }
+}
+
+@Composable
+private fun OrderCard(data: AppData) {
+    val ctx = LocalContext.current
+    val open = Logic.openOrder(data) ?: return
+    val days = Logic.daysOfSupply(data)
+    SectionCard("Order more pills", Icons.Filled.Inventory2) {
+        Text(
+            if (days <= 0) "You don't have enough for your next dose." else "Your supply lasts about $days more days.",
+            style = MaterialTheme.typography.bodyMedium,
+            color = mutedText(),
+        )
+        Text(
+            "Tap Ordered once you've ordered. Add the pills in Settings when they arrive.",
+            style = MaterialTheme.typography.bodySmall,
+            color = mutedText(),
+        )
+        Button(
+            onClick = { Logic.markOrdered(ctx, open.due, true) },
+            shape = RoundedCornerShape(16.dp),
+            modifier = Modifier.fillMaxWidth(),
+        ) { Text("Ordered") }
     }
 }
 

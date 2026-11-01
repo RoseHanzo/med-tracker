@@ -46,6 +46,8 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.layout.offset
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.StrokeJoin
@@ -130,6 +132,20 @@ private fun checkFor(data: AppData, date: LocalDate, today: LocalDate, mark: Mar
     else -> CheckMark.CROSS
 }
 
+/** Order-more-pills mark for a day, using the same colours as forms. */
+private fun orderMarkFor(data: AppData, date: LocalDate, today: LocalDate): FormMark? {
+    val key = date.toString()
+    val event = data.orders.lastOrNull { it.due == key }
+    if (event != null) {
+        return when {
+            event.done != null -> FormMark.DONE
+            date.isBefore(today) -> FormMark.MISSED
+            else -> FormMark.PENDING
+        }
+    }
+    return if (Logic.projectedOrderDate(data) == date) FormMark.PENDING else null
+}
+
 private fun formMarkFor(data: AppData, date: LocalDate, today: LocalDate): FormMark? {
     val forms = Logic.formsOn(data, date)
     if (forms.isEmpty()) return null
@@ -206,6 +222,34 @@ private fun FormGlyph(color: Color, height: Dp = 11.dp) {
     }
 }
 
+/** Outline pill box: a lid on top of a box with a small cross, all in one colour. */
+@Composable
+private fun PillBoxGlyph(color: Color, height: Dp = 11.dp) {
+    Canvas(Modifier.size(width = height, height = height)) {
+        val w = this.size.width
+        val h = this.size.height
+        val stroke = 1.dp.toPx()
+        val i = stroke / 2
+        val lidBottom = h * 0.32f
+        // Lid, a little wider than the box.
+        drawRoundRect(
+            color, topLeft = Offset(i, i), size = Size(w - stroke, lidBottom - i),
+            cornerRadius = CornerRadius(stroke, stroke), style = Stroke(stroke),
+        )
+        // Box.
+        drawRoundRect(
+            color, topLeft = Offset(w * 0.1f, lidBottom), size = Size(w * 0.8f, h - lidBottom - i),
+            cornerRadius = CornerRadius(stroke, stroke), style = Stroke(stroke),
+        )
+        // Cross.
+        val cx = w / 2
+        val cy = lidBottom + (h - lidBottom) / 2
+        val arm = h * 0.16f
+        drawLine(color, Offset(cx - arm, cy), Offset(cx + arm, cy), stroke, StrokeCap.Round)
+        drawLine(color, Offset(cx, cy - arm), Offset(cx, cy + arm), stroke, StrokeCap.Round)
+    }
+}
+
 @Composable
 private fun MonthGrid(data: AppData, month: YearMonth, selected: LocalDate, onPick: (LocalDate) -> Unit) {
     val today = LocalDate.now()
@@ -239,6 +283,7 @@ private fun MonthGrid(data: AppData, month: YearMonth, selected: LocalDate, onPi
                             mark = mark,
                             pills = dose?.pills ?: (if (date.isAfter(today)) Logic.explicitPlanFor(data.settings, date) else Logic.planFor(data.settings, date)).pills,
                             check = checkFor(data, date, today, mark),
+                            order = orderMarkFor(data, date, today),
                             form = formMarkFor(data, date, today),
                             isSelected = date == selected,
                             isToday = date == today,
@@ -258,6 +303,7 @@ private fun DayCell(
     mark: Mark?,
     pills: Int,
     check: CheckMark?,
+    order: FormMark?,
     form: FormMark?,
     isSelected: Boolean,
     isToday: Boolean,
@@ -304,7 +350,11 @@ private fun DayCell(
             verticalAlignment = Alignment.CenterVertically,
         ) {
             if (check != null) CheckGlyph(check)
-            if (form != null) FormGlyph(formColor(form))
+            // Ordering pills takes priority over a form on the same day.
+            when {
+                order != null -> PillBoxGlyph(formColor(order))
+                form != null -> FormGlyph(formColor(form))
+            }
         }
     }
 }
@@ -328,8 +378,12 @@ private fun Legend() {
             LegendGlyph("Check-in to do", Modifier.weight(1f)) { CheckGlyph(CheckMark.DASH, 12.dp) }
             LegendGlyph("Form", Modifier.weight(1f)) { FormGlyph(FormBlue, 13.dp) }
         }
+        Row(horizontalArrangement = Arrangement.spacedBy(16.dp)) {
+            LegendGlyph("Order more pills", Modifier.weight(1f)) { PillBoxGlyph(FormBlue, 13.dp) }
+            Spacer(Modifier.weight(1f))
+        }
         Text(
-            "Dots in the ring: pills that day. Forms turn green when done.",
+            "Dots in the ring: pills that day. Forms and orders turn green when done, red if missed.",
             style = MaterialTheme.typography.labelSmall,
             color = mutedText(),
         )
@@ -401,6 +455,35 @@ private fun DayDetails(data: AppData, date: LocalDate) {
                     plan.pills > 0 -> {
                         Button(onClick = { Logic.markTaken(ctx, date) }) { Text("Mark taken") }
                         OutlinedButton(onClick = { Logic.markMissed(ctx, date) }) { Text("Mark missed") }
+                    }
+                }
+            }
+        }
+
+        val order = data.orders.lastOrNull { it.due == date.toString() }
+        val projected = order == null && Logic.projectedOrderDate(data) == date
+        if (order != null || projected) {
+            HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f))
+            Text("Order more pills", style = MaterialTheme.typography.labelLarge, color = mutedText())
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    when {
+                        order?.done != null -> "Ordered"
+                        order != null && date.isBefore(today) -> "Not ordered yet"
+                        order != null -> "Due today"
+                        else -> "Due on this day if nothing changes"
+                    },
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = when {
+                        order?.done != null -> goodText()
+                        order != null && date.isBefore(today) -> badText()
+                        else -> MaterialTheme.colorScheme.onSurface
+                    },
+                    modifier = Modifier.weight(1f),
+                )
+                if (order != null) {
+                    TextButton(onClick = { Logic.markOrdered(ctx, order.due, order.done == null) }) {
+                        Text(if (order.done == null) "Mark ordered" else "Undo")
                     }
                 }
             }

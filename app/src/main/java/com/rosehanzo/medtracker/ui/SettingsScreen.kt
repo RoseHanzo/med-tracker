@@ -669,10 +669,10 @@ private fun SupplySection(data: AppData) {
 
     when (dialog) {
         "set" -> NumberDialog("Pills you have now", if (s.pillsLeft >= 0) s.pillsLeft else 30, { dialog = null }) { n ->
-            Logic.updateSettings(ctx, reschedule = false) { it.copy(pillsLeft = n, stockWarnDate = "") }
+            Logic.setPills(ctx, n, add = false)
         }
         "add" -> NumberDialog("Pills in the new pack", 30, { dialog = null }) { n ->
-            Logic.updateSettings(ctx, reschedule = false) { it.copy(pillsLeft = maxOf(it.pillsLeft, 0) + n, stockWarnDate = "") }
+            Logic.setPills(ctx, n, add = true)
         }
     }
 }
@@ -788,6 +788,9 @@ private fun HealthSection(s: Settings) {
     val status = remember(tick) { HealthSync.status(ctx) }
     var granted by remember { mutableStateOf<Set<String>>(emptySet()) }
     var syncing by remember { mutableStateOf(false) }
+    var checking by remember { mutableStateOf(false) }
+    var checkRows by remember { mutableStateOf<List<HealthSync.CheckRow>?>(null) }
+    var checkError by remember { mutableStateOf<String?>(null) }
 
     LaunchedEffect(tick) { granted = HealthSync.granted(ctx) }
 
@@ -844,6 +847,26 @@ private fun HealthSection(s: Settings) {
                         onCheckedChange = { on -> Logic.updateSettings(ctx, reschedule = false) { it.copy(hcAutoSync = on) } },
                     )
                 }
+
+                // Shows what Health Connect itself holds, to find where a sync gap is.
+                OutlinedButton(
+                    onClick = {
+                        checking = true
+                        checkError = null
+                        scope.launch {
+                            try {
+                                checkRows = HealthSync.check(ctx)
+                            } catch (e: Exception) {
+                                checkError = e.javaClass.simpleName + (e.message?.let { ": $it" } ?: "")
+                            }
+                            checking = false
+                        }
+                    },
+                    enabled = !checking,
+                    modifier = Modifier.fillMaxWidth(),
+                ) { Text(if (checking) "Checking…" else "Check Health Connect") }
+                checkError?.let { Text("Check failed: $it", style = MaterialTheme.typography.bodySmall, color = badText()) }
+                checkRows?.let { rows -> HealthCheckResults(rows, s.hcLastSync) }
                 Text(
                     "Samsung Health has to share with Health Connect too: in Samsung Health, open Settings, " +
                         "then Health Connect, and allow weight, blood pressure and heart rate. " +
@@ -868,6 +891,49 @@ private fun HealthSection(s: Settings) {
                 "Health Connect isn't available on this phone, so readings need entering by hand.",
                 style = MaterialTheme.typography.bodyMedium,
             )
+        }
+    }
+}
+
+@Composable
+private fun HealthCheckResults(rows: List<HealthSync.CheckRow>, lastSync: Long) {
+    Column(
+        Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(16.dp))
+            .background(MaterialTheme.colorScheme.surfaceContainer)
+            .padding(12.dp),
+        verticalArrangement = Arrangement.spacedBy(10.dp),
+    ) {
+        Text("In Health Connect, last 30 days", style = MaterialTheme.typography.labelLarge)
+        rows.forEach { r ->
+            Column {
+                Text(r.label, style = MaterialTheme.typography.titleSmall)
+                val (line, color) = when {
+                    !r.permitted -> "Cadence isn't allowed to read this. Tap Permissions." to badText()
+                    r.error != null -> "Couldn't read: ${r.error}" to badText()
+                    r.count == 0 -> "No readings. Nothing has been shared with Health Connect." to badText()
+                    else -> "${r.count} readings from ${r.sources.joinToString(", ")}" to goodText()
+                }
+                Text(line, style = MaterialTheme.typography.bodySmall, color = color)
+                r.latest?.let {
+                    Text("Latest: ${dayTime(it.toEpochMilli())}", style = MaterialTheme.typography.labelSmall, color = mutedText())
+                }
+            }
+        }
+        val anyData = rows.any { it.count > 0 }
+        Text(
+            when {
+                rows.none { it.permitted } -> "Cadence has no permissions yet, so it can't read anything."
+                !anyData -> "Health Connect has nothing to share, so the gap is between Samsung Health and Health Connect. " +
+                    "In Samsung Health: Settings, then Health Connect, and turn on sharing for these items."
+                else -> "Health Connect has data. If Cadence still shows nothing after Sync now, tell Claude what this says."
+            },
+            style = MaterialTheme.typography.bodySmall,
+            color = mutedText(),
+        )
+        if (lastSync > 0) {
+            Text("Cadence last synced ${dayTime(lastSync)}", style = MaterialTheme.typography.labelSmall, color = mutedText())
         }
     }
 }

@@ -49,17 +49,11 @@ object HealthSync {
             return@withContext "Connect Samsung Health in Settings first"
         }
 
-        val s = Store.data(ctx).settings
         val zone = ZoneId.systemDefault()
-        // Health Connect only lets apps read the last 30 days by default.
-        val floor = LocalDate.now().minusDays(29).atStartOfDay(zone).toInstant()
-        val fromLast = if (s.hcLastSync > 0) {
-            Instant.ofEpochMilli(s.hcLastSync).atZone(zone).toLocalDate()
-                .minusDays(1).atStartOfDay(zone).toInstant()
-        } else {
-            floor
-        }
-        val since = if (fromLast.isAfter(floor)) fromLast else floor
+        // Always read the full 30 days Health Connect allows: Samsung Health can share
+        // older readings late (e.g. right after sharing is turned on). Duplicates are
+        // replaced by id below, so re-reading is safe.
+        val since = LocalDate.now().minusDays(29).atStartOfDay(zone).toInstant()
 
         val found = mutableListOf<Metric>()
 
@@ -107,6 +101,57 @@ object HealthSync {
             1 -> "Synced 1 reading"
             else -> "Synced ${found.size} readings"
         }
+    }
+
+    /** One line of the Health Connect check. */
+    data class CheckRow(
+        val label: String,
+        val permitted: Boolean,
+        val count: Int,
+        val sources: List<String>,
+        val latest: Instant?,
+        val error: String?,
+    )
+
+    private fun appName(pkg: String): String = when (pkg) {
+        "com.sec.android.app.shealth" -> "Samsung Health"
+        "com.google.android.apps.fitness" -> "Google Fit"
+        "com.google.android.apps.healthdata" -> "Health Connect"
+        else -> pkg
+    }
+
+    /**
+     * Looks at what Health Connect itself holds for the last 30 days, regardless of what
+     * Cadence has already synced. Shows whether the gap is Samsung Health → Health Connect
+     * or Health Connect → Cadence.
+     */
+    suspend fun check(ctx: Context): List<CheckRow> = withContext(Dispatchers.IO) {
+        val client = HealthConnectClient.getOrCreate(ctx)
+        val granted = runCatching { client.permissionController.getGrantedPermissions() }.getOrDefault(emptySet())
+        val since = LocalDate.now().minusDays(29).atStartOfDay(ZoneId.systemDefault()).toInstant()
+
+        suspend fun <T : Record> row(label: String, perm: String, type: KClass<T>, timeOf: (T) -> Instant): CheckRow {
+            if (perm !in granted) return CheckRow(label, false, 0, emptyList(), null, null)
+            return try {
+                val records = readAll(client, type, since)
+                CheckRow(
+                    label = label,
+                    permitted = true,
+                    count = records.size,
+                    sources = records.map { appName(it.metadata.dataOrigin.packageName) }.distinct(),
+                    latest = records.maxOfOrNull(timeOf),
+                    error = null,
+                )
+            } catch (e: Exception) {
+                CheckRow(label, true, 0, emptyList(), null, e.javaClass.simpleName + (e.message?.let { ": $it" } ?: ""))
+            }
+        }
+
+        listOf(
+            row("Weight", WEIGHT, WeightRecord::class) { it.time },
+            row("Blood pressure", BLOOD_PRESSURE, BloodPressureRecord::class) { it.time },
+            row("Heart rate", HEART_RATE, HeartRateRecord::class) { it.endTime },
+        )
     }
 
     private suspend fun <T : Record> readAll(

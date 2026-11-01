@@ -191,6 +191,57 @@ object Logic {
         updateSettings(ctx) { s -> s.copy(phases = s.phases.filterNot { it.id == id }, stockWarnDate = "") }
     }
 
+    // ---------- Ordering more pills ----------
+
+    /** The order reminder still waiting for you to tap Ordered, if any. */
+    fun openOrder(d: AppData): OrderEvent? = d.orders.lastOrNull { it.done == null }
+
+    /**
+     * When the next order will be due if nothing changes: the day your supply drops to
+     * the warning level. Null if the pill count isn't set or an order is already open.
+     */
+    fun projectedOrderDate(d: AppData): LocalDate? {
+        if (d.settings.pillsLeft < 0 || openOrder(d) != null) return null
+        val days = daysOfSupply(d)
+        if (days >= 730) return null
+        val today = LocalDate.now()
+        return if (days > d.settings.lowStockDays) today.plusDays((days - d.settings.lowStockDays).toLong()) else today
+    }
+
+    /** Opens an order reminder the first time supply reaches the warning level since the last refill. */
+    fun refreshOrders(ctx: Context) {
+        val d = Store.data(ctx)
+        val s = d.settings
+        if (s.pillsLeft < 0) return
+        if (daysOfSupply(d) > s.lowStockDays) return
+        if (d.orders.any { it.due >= s.lastRefill }) return
+        val today = LocalDate.now().toString()
+        Store.update(ctx) { it.copy(orders = it.orders + OrderEvent(today)) }
+    }
+
+    fun markOrdered(ctx: Context, due: String, ordered: Boolean) {
+        val today = LocalDate.now().toString()
+        Store.update(ctx) { d ->
+            d.copy(orders = d.orders.map { if (it.due == due) it.copy(done = if (ordered) today else null) else it })
+        }
+    }
+
+    /** From the notification: ticks off the open order reminder. */
+    fun markOpenOrdered(ctx: Context) {
+        val open = openOrder(Store.data(ctx)) ?: return
+        markOrdered(ctx, open.due, true)
+    }
+
+    /** Sets or tops up the pill count and starts a new order cycle. */
+    fun setPills(ctx: Context, count: Int, add: Boolean) {
+        val today = LocalDate.now().toString()
+        updateSettings(ctx, reschedule = false) {
+            val n = if (add) maxOf(it.pillsLeft, 0) + count else count
+            it.copy(pillsLeft = n, stockWarnDate = "", lastRefill = today)
+        }
+        refreshOrders(ctx)
+    }
+
     // ---------- Forms ----------
 
     fun formOccurs(f: FormReminder, date: LocalDate): Boolean {

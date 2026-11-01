@@ -82,6 +82,7 @@ class MainActivity : ComponentActivity() {
         super.onResume()
         resumeTick++
         Reminders.scheduleAll(this)
+        com.rosehanzo.medtracker.data.Logic.refreshOrders(this)
         lifecycleScope.launch { runCatching { Updater.check() } }
         if (Store.data(this).settings.hcAutoSync) {
             lifecycleScope.launch {
