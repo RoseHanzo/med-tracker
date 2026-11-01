@@ -13,6 +13,8 @@ import androidx.core.app.NotificationCompat
 import androidx.core.app.NotificationManagerCompat
 import com.rosehanzo.medtracker.MainActivity
 import com.rosehanzo.medtracker.R
+import com.rosehanzo.medtracker.data.AppData
+import com.rosehanzo.medtracker.data.FormReminder
 import com.rosehanzo.medtracker.data.Logic
 import com.rosehanzo.medtracker.data.Settings
 import com.rosehanzo.medtracker.data.Store
@@ -36,6 +38,16 @@ object Reminders {
     const val ACTION_NAG = "com.rosehanzo.medtracker.action.NAG"
     const val ACTION_TAKE = "com.rosehanzo.medtracker.action.TAKE"
     const val EXTRA_DATE = "date"
+
+    const val ACTION_FORM_DUE = "com.rosehanzo.medtracker.action.FORM_DUE"
+    const val ACTION_FORM_NAG = "com.rosehanzo.medtracker.action.FORM_NAG"
+    const val ACTION_FORM_DONE = "com.rosehanzo.medtracker.action.FORM_DONE"
+
+    private const val REQ_FORM_DUE = 110
+    private const val REQ_FORM_NAG = 210
+    private const val REQ_FORM_DONE = 310
+    private const val REQ_FORM_OPEN = 410
+    private const val FORM_ID = 1100
 
     private const val REQ_DUE = 100
     private const val REQ_NAG = 200
@@ -102,7 +114,13 @@ object Reminders {
             .plusMinutes(Logic.doseMinutes(s, date).toLong())
             .toInstant().toEpochMilli()
 
+    /** Dose and form reminders. Safe to call any time; it only fixes up what's needed. */
     fun scheduleAll(ctx: Context) {
+        scheduleDose(ctx)
+        scheduleForms(ctx)
+    }
+
+    private fun scheduleDose(ctx: Context) {
         val d = Store.data(ctx)
         val s = d.settings
         if (!s.remindersOn) {
@@ -211,6 +229,125 @@ object Reminders {
         }
     }
 
+    // ---------- Forms ----------
+
+    private fun at(date: LocalDate, minutes: Int): Long =
+        date.atStartOfDay(ZoneId.systemDefault()).plusMinutes(minutes.toLong()).toInstant().toEpochMilli()
+
+    /** Forms due today whose time has come and that aren't done yet. */
+    private fun overdueForms(d: AppData, today: LocalDate, now: Long): List<FormReminder> =
+        Logic.formsOn(d, today).filter { !Logic.formDone(it, today) && at(today, it.time) <= now }
+
+    fun scheduleForms(ctx: Context) {
+        val d = Store.data(ctx)
+        val s = d.settings
+        if (!s.remindersOn || d.forms.isEmpty()) {
+            cancelAlarm(ctx, ACTION_FORM_DUE, REQ_FORM_DUE)
+            stopFormNag(ctx)
+            return
+        }
+        val now = System.currentTimeMillis()
+        val today = LocalDate.now()
+
+        // Earliest upcoming form time across all forms.
+        var bestTime = Long.MAX_VALUE
+        var bestDate: LocalDate? = null
+        for (f in d.forms) {
+            var date: LocalDate? = Logic.nextOccurrence(f, today)
+            var guard = 0
+            while (guard < 60) {
+                val cur = date ?: break
+                if (at(cur, f.time) > now && !Logic.formDone(f, cur)) break
+                date = if (f.everyWeeks > 0) cur.plusWeeks(f.everyWeeks.toLong()) else null
+                guard++
+            }
+            val found = date ?: continue
+            if (guard >= 60) continue
+            val t = at(found, f.time)
+            if (t < bestTime) {
+                bestTime = t
+                bestDate = found
+            }
+        }
+        val next = bestDate
+        if (next != null) {
+            setAlarm(ctx, bestTime, pending(ctx, ACTION_FORM_DUE, next.toString(), REQ_FORM_DUE))
+        } else {
+            cancelAlarm(ctx, ACTION_FORM_DUE, REQ_FORM_DUE)
+        }
+
+        // A form is overdue today: make sure the nagging is running (e.g. after a restart).
+        if (overdueForms(d, today, now).isEmpty()) {
+            stopFormNag(ctx)
+        } else if (existing(ctx, ACTION_FORM_NAG, REQ_FORM_NAG) == null) {
+            setAlarm(ctx, now + 3_000L, pending(ctx, ACTION_FORM_NAG, today.toString(), REQ_FORM_NAG))
+        }
+    }
+
+    private fun stopFormNag(ctx: Context) {
+        cancelAlarm(ctx, ACTION_FORM_NAG, REQ_FORM_NAG)
+        NotificationManagerCompat.from(ctx).cancel(FORM_ID)
+    }
+
+    fun onFormAlarm(ctx: Context, intent: Intent) {
+        val dateText = intent.getStringExtra(EXTRA_DATE) ?: return
+        val date = runCatching { LocalDate.parse(dateText) }.getOrNull() ?: return
+        val d = Store.data(ctx)
+        val s = d.settings
+        val now = System.currentTimeMillis()
+        val today = LocalDate.now()
+        val due = if (s.remindersOn && date == today) overdueForms(d, today, now) else emptyList()
+
+        if (due.isEmpty()) {
+            stopFormNag(ctx)
+            if (intent.action == ACTION_FORM_DUE) scheduleForms(ctx)
+            return
+        }
+
+        showForms(ctx, s, due, today)
+        val nagAt = now + s.nagMinutes.coerceAtLeast(1) * 60_000L
+        setAlarm(ctx, nagAt, pending(ctx, ACTION_FORM_NAG, dateText, REQ_FORM_NAG))
+        if (intent.action == ACTION_FORM_DUE) scheduleForms(ctx)
+    }
+
+    private fun showForms(ctx: Context, s: Settings, due: List<FormReminder>, date: LocalDate) {
+        val nmc = NotificationManagerCompat.from(ctx)
+        if (!nmc.areNotificationsEnabled()) return
+
+        val done = PendingIntent.getBroadcast(
+            ctx, REQ_FORM_DONE, alarmIntent(ctx, ACTION_FORM_DONE, date.toString()),
+            PendingIntent.FLAG_UPDATE_CURRENT or IMMUTABLE,
+        )
+        val open = PendingIntent.getActivity(
+            ctx, REQ_FORM_OPEN,
+            Intent(ctx, MainActivity::class.java)
+                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP),
+            PendingIntent.FLAG_UPDATE_CURRENT or IMMUTABLE,
+        )
+
+        // Kept deliberately vague, like the dose reminder.
+        val title = if (due.size == 1) "1 form due today" else "${due.size} forms due today"
+        val text = "Due at ${clockTime(ctx, due.first().time)}. I'll remind you every ${s.nagMinutes} min until you tap Done."
+        val n = NotificationCompat.Builder(ctx, CH_DOSE)
+            .setSmallIcon(R.drawable.ic_form)
+            .setContentTitle(title)
+            .setContentText(text)
+            .setStyle(NotificationCompat.BigTextStyle().bigText(text))
+            .setPriority(NotificationCompat.PRIORITY_HIGH)
+            .setCategory(NotificationCompat.CATEGORY_REMINDER)
+            .setOngoing(true)
+            .setAutoCancel(false)
+            .setOnlyAlertOnce(false)
+            .setColor(BRAND)
+            .setContentIntent(open)
+            .addAction(R.drawable.ic_check, "Done", done)
+            .build()
+        try {
+            nmc.notify(FORM_ID, n)
+        } catch (_: SecurityException) {
+        }
+    }
+
     fun checkStock(ctx: Context) {
         val d = Store.data(ctx)
         val s = d.settings
@@ -271,6 +408,12 @@ class AlarmReceiver : BroadcastReceiver() {
                 Logic.markTaken(context, date)
             }
             Reminders.ACTION_DUE, Reminders.ACTION_NAG -> Reminders.onAlarm(context, intent)
+            Reminders.ACTION_FORM_DONE -> {
+                val date = intent.getStringExtra(Reminders.EXTRA_DATE)
+                    ?.let { runCatching { LocalDate.parse(it) }.getOrNull() } ?: LocalDate.now()
+                Logic.markFormsDone(context, date)
+            }
+            Reminders.ACTION_FORM_DUE, Reminders.ACTION_FORM_NAG -> Reminders.onFormAlarm(context, intent)
         }
     }
 }

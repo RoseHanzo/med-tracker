@@ -20,10 +20,11 @@ data class SymptomDef(
 )
 
 val DEFAULT_SYMPTOMS = listOf(
-    SymptomDef("mood", "Mood", "Very low", "Great", highIsGood = true),
-    SymptomDef("focus", "Focus / energy", "Very low", "Excellent", highIsGood = true),
-    SymptomDef("appetite", "Appetite", "None", "Normal", highIsGood = true),
-    SymptomDef("sleep", "Sleep quality", "Very poor", "Great", highIsGood = true),
+    // Every scale runs from 1 = no impact to 10 = the most impact.
+    SymptomDef("mood", "Low mood", "None", "Severe"),
+    SymptomDef("focus", "Low focus / energy", "None", "Severe"),
+    SymptomDef("appetite", "Low appetite", "None", "Severe"),
+    SymptomDef("sleep", "Poor sleep", "None", "Severe"),
     SymptomDef("chest", "Chest tightness", "None", "Severe"),
     SymptomDef("drymouth", "Dry mouth", "None", "Severe"),
     SymptomDef("headache", "Headache", "None", "Severe"),
@@ -68,6 +69,20 @@ data class Settings(
     val stockWarnDate: String = "",
 )
 
+/**
+ * A form to fill in. Occurs on [start] and then every [everyWeeks] weeks (0 = once).
+ * [done] holds the dates (yyyy-MM-dd) it was marked done.
+ */
+data class FormReminder(
+    val id: String,
+    val name: String = "Form",
+    val start: String,
+    /** Minutes after midnight. */
+    val time: Int = 10 * 60,
+    val everyWeeks: Int = 0,
+    val done: Set<String> = emptySet(),
+)
+
 /** The day's dose: taken once, [pills] at a time. */
 data class DoseTaken(val time: Long, val pills: Int)
 
@@ -88,6 +103,7 @@ data class AppData(
     /** Date -> symptom id -> rating 1..10. */
     val checkins: Map<String, Map<String, Int>> = emptyMap(),
     val metrics: List<Metric> = emptyList(),
+    val forms: List<FormReminder> = emptyList(),
 )
 
 fun defaultSettings(): Settings {
@@ -208,8 +224,21 @@ object Codec {
             metrics.put(x)
         }
 
+        val forms = JSONArray()
+        d.forms.forEach {
+            val x = JSONObject()
+            x.put("id", it.id)
+            x.put("name", it.name)
+            x.put("start", it.start)
+            x.put("time", it.time)
+            x.put("everyWeeks", it.everyWeeks)
+            x.put("done", JSONArray(it.done.toList()))
+            forms.put(x)
+        }
+
         val root = JSONObject()
-        root.put("version", 2)
+        root.put("version", 3)
+        root.put("forms", forms)
         root.put("settings", so)
         root.put("doses", doses)
         root.put("checkins", checkins)
@@ -315,6 +344,44 @@ object Codec {
             }
         } ?: emptyList()
 
-        return AppData(settings, doses, checkins, metrics.sortedBy { it.time })
+        val forms = o.optJSONArray("forms")?.let { a ->
+            List(a.length()) { i ->
+                val x = a.getJSONObject(i)
+                val doneArr = x.optJSONArray("done")
+                FormReminder(
+                    id = x.optString("id", "f$i"),
+                    name = x.optString("name", "Form"),
+                    start = x.getString("start"),
+                    time = x.optInt("time", 10 * 60),
+                    everyWeeks = x.optInt("everyWeeks", 0),
+                    done = doneArr?.let { arr -> List(arr.length()) { j -> arr.getString(j) }.toSet() } ?: emptySet(),
+                )
+            }
+        } ?: emptyList()
+
+        val loaded = AppData(settings, doses, checkins, metrics.sortedBy { it.time }, forms)
+        return if (o.optInt("version", 1) < 3) alignScales(loaded) else loaded
+    }
+
+    /**
+     * Before version 3 some items ran "higher is better" (e.g. mood). Now every scale
+     * runs 1 = no impact to 10 = most impact, so those items are renamed and their
+     * saved ratings flipped (v becomes 11 - v).
+     */
+    private fun alignScales(d: AppData): AppData {
+        val flip = d.settings.symptoms.filter { it.highIsGood }.map { it.id }.toSet()
+        if (flip.isEmpty()) return d
+        val symptoms = d.settings.symptoms.map { def ->
+            val fresh = DEFAULT_SYMPTOMS.firstOrNull { it.id == def.id }
+            when {
+                fresh != null -> def.copy(name = fresh.name, low = fresh.low, high = fresh.high, highIsGood = false)
+                def.highIsGood -> def.copy(low = def.high, high = def.low, highIsGood = false)
+                else -> def
+            }
+        }
+        val checkins = d.checkins.mapValues { (_, values) ->
+            values.mapValues { (id, v) -> if (id in flip) (11 - v).coerceIn(1, 10) else v }
+        }
+        return d.copy(settings = d.settings.copy(symptoms = symptoms), checkins = checkins)
     }
 }

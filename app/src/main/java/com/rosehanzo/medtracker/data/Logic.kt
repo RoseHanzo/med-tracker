@@ -3,6 +3,8 @@ package com.rosehanzo.medtracker.data
 import android.content.Context
 import com.rosehanzo.medtracker.reminders.Reminders
 import java.time.LocalDate
+import java.time.LocalTime
+import java.time.temporal.ChronoUnit
 
 enum class DayStatus { TAKEN, MISSED, PENDING, OFF, NONE }
 
@@ -128,6 +130,64 @@ object Logic {
 
     fun deletePhase(ctx: Context, id: String) {
         updateSettings(ctx) { s -> s.copy(phases = s.phases.filterNot { it.id == id }, stockWarnDate = "") }
+    }
+
+    // ---------- Forms ----------
+
+    fun formOccurs(f: FormReminder, date: LocalDate): Boolean {
+        val start = runCatching { LocalDate.parse(f.start) }.getOrNull() ?: return false
+        if (date.isBefore(start)) return false
+        if (f.everyWeeks <= 0) return date == start
+        return ChronoUnit.DAYS.between(start, date) % (7L * f.everyWeeks) == 0L
+    }
+
+    /** Forms due on [date], earliest first. */
+    fun formsOn(d: AppData, date: LocalDate): List<FormReminder> =
+        d.forms.filter { formOccurs(it, date) }.sortedBy { it.time }
+
+    fun formDone(f: FormReminder, date: LocalDate): Boolean = date.toString() in f.done
+
+    /** Next date on or after [from] that [f] is due, or null if it never is again. */
+    fun nextOccurrence(f: FormReminder, from: LocalDate): LocalDate? {
+        val start = runCatching { LocalDate.parse(f.start) }.getOrNull() ?: return null
+        if (!from.isAfter(start)) return start
+        if (f.everyWeeks <= 0) return null
+        val step = 7L * f.everyWeeks
+        val gap = ChronoUnit.DAYS.between(start, from)
+        val periods = (gap + step - 1) / step
+        return start.plusDays(periods * step)
+    }
+
+    fun setFormDone(ctx: Context, id: String, date: LocalDate, done: Boolean) {
+        val key = date.toString()
+        Store.update(ctx) { d ->
+            d.copy(forms = d.forms.map { f ->
+                if (f.id != id) f else f.copy(done = if (done) f.done + key else f.done - key)
+            })
+        }
+        Reminders.scheduleForms(ctx)
+    }
+
+    /** From the notification: marks the forms on [date] whose time has come as done (not later ones). */
+    fun markFormsDone(ctx: Context, date: LocalDate) {
+        val key = date.toString()
+        val nowMinutes = if (date == LocalDate.now()) LocalTime.now().toSecondOfDay() / 60 else 24 * 60
+        Store.update(ctx) { d ->
+            d.copy(forms = d.forms.map { f ->
+                if (formOccurs(f, date) && f.time <= nowMinutes) f.copy(done = f.done + key) else f
+            })
+        }
+        Reminders.scheduleForms(ctx)
+    }
+
+    fun saveForm(ctx: Context, form: FormReminder) {
+        Store.update(ctx) { d -> d.copy(forms = d.forms.filterNot { it.id == form.id } + form) }
+        Reminders.scheduleForms(ctx)
+    }
+
+    fun deleteForm(ctx: Context, id: String) {
+        Store.update(ctx) { d -> d.copy(forms = d.forms.filterNot { it.id == id }) }
+        Reminders.scheduleForms(ctx)
     }
 
     /** Change settings; reschedules reminders unless [reschedule] is false. */

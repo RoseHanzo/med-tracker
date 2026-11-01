@@ -11,6 +11,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.rememberScrollState
@@ -22,6 +23,7 @@ import androidx.compose.material.icons.automirrored.filled.KeyboardArrowLeft
 import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.Description
 import androidx.compose.material.icons.filled.Event
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
@@ -93,23 +95,49 @@ fun CalendarScreen(data: AppData) {
 /** What a calendar day shows. No mark means no dose was planned. */
 private enum class Mark { TAKEN, MISSED, TODAY, PLANNED }
 
+/** Form icon colour: done, still to do, or missed. */
+private enum class FormMark { DONE, PENDING, MISSED }
+
 private val TodayFill = Color(0xFFF08A24)
 
 private fun markFor(data: AppData, date: LocalDate, today: LocalDate): Mark? {
     val taken = data.doses.containsKey(date.toString())
     val planned = Logic.planFor(data.settings, date).pills > 0
     return when {
-        date == today -> if (planned || taken) Mark.TODAY else null
-        date.isBefore(today) -> when {
-            taken -> Mark.TAKEN
-            planned -> Mark.MISSED
-            else -> null
-        }
+        taken && !date.isAfter(today) -> Mark.TAKEN
+        date == today -> if (planned) Mark.TODAY else null
+        date.isBefore(today) -> if (planned) Mark.MISSED else null
         else -> if (planned) Mark.PLANNED else null
     }
 }
 
+private fun formMarkFor(data: AppData, date: LocalDate, today: LocalDate): FormMark? {
+    val forms = Logic.formsOn(data, date)
+    if (forms.isEmpty()) return null
+    val allDone = forms.all { Logic.formDone(it, date) }
+    return when {
+        allDone -> FormMark.DONE
+        date.isBefore(today) -> FormMark.MISSED
+        else -> FormMark.PENDING
+    }
+}
+
 private fun tally(n: Int): String = "I".repeat(n.coerceIn(1, 4))
+
+@Composable
+private fun markColor(mark: Mark): Color = when (mark) {
+    Mark.TAKEN -> GoodFill
+    Mark.MISSED -> BadFill
+    Mark.TODAY -> TodayFill
+    Mark.PLANNED -> MaterialTheme.colorScheme.outline
+}
+
+@Composable
+private fun formColor(mark: FormMark): Color = when (mark) {
+    FormMark.DONE -> GoodFill
+    FormMark.MISSED -> BadFill
+    FormMark.PENDING -> MaterialTheme.colorScheme.primary
+}
 
 @Composable
 private fun MonthGrid(data: AppData, month: YearMonth, selected: LocalDate, onPick: (LocalDate) -> Unit) {
@@ -117,8 +145,8 @@ private fun MonthGrid(data: AppData, month: YearMonth, selected: LocalDate, onPi
     val offset = month.atDay(1).dayOfWeek.value - 1 // Monday first
     val rows = (offset + month.lengthOfMonth() + 6) / 7
 
-    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+    Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(3.dp)) {
             WEEKDAY_LETTERS.forEach {
                 Text(
                     it,
@@ -130,7 +158,7 @@ private fun MonthGrid(data: AppData, month: YearMonth, selected: LocalDate, onPi
             }
         }
         for (r in 0 until rows) {
-            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(3.dp)) {
                 for (c in 0 until 7) {
                     val dayNum = r * 7 + c - offset + 1
                     if (dayNum < 1 || dayNum > month.lengthOfMonth()) {
@@ -143,6 +171,7 @@ private fun MonthGrid(data: AppData, month: YearMonth, selected: LocalDate, onPi
                             mark = markFor(data, date, today),
                             pills = dose?.pills ?: Logic.planFor(data.settings, date).pills,
                             hasCheckin = data.checkins.containsKey(date.toString()),
+                            form = formMarkFor(data, date, today),
                             isSelected = date == selected,
                             isToday = date == today,
                             modifier = Modifier.weight(1f),
@@ -161,6 +190,7 @@ private fun DayCell(
     mark: Mark?,
     pills: Int,
     hasCheckin: Boolean,
+    form: FormMark?,
     isSelected: Boolean,
     isToday: Boolean,
     modifier: Modifier,
@@ -172,48 +202,49 @@ private fun DayCell(
         m = m.background(MaterialTheme.colorScheme.primary.copy(alpha = 0.12f))
             .border(1.5.dp, MaterialTheme.colorScheme.primary, shape)
     }
-    m = m.clickable(onClick = onClick).padding(vertical = 5.dp)
+    m = m.clickable(onClick = onClick).padding(top = 2.dp, bottom = 3.dp, start = 1.dp, end = 1.dp)
 
     Column(m, horizontalAlignment = Alignment.CenterHorizontally) {
-        Text(
-            "${date.dayOfMonth}",
-            style = MaterialTheme.typography.labelMedium,
-            fontWeight = if (isToday) FontWeight.Bold else FontWeight.Normal,
-            color = if (mark == null) mutedText() else MaterialTheme.colorScheme.onSurface,
-        )
-        Spacer(Modifier.size(3.dp))
-        if (mark == null) {
-            Spacer(Modifier.size(30.dp))
-        } else {
-            val fill = when (mark) {
-                Mark.TAKEN -> GoodFill
-                Mark.MISSED -> BadFill
-                Mark.TODAY -> TodayFill
-                Mark.PLANNED -> MaterialTheme.colorScheme.surfaceContainerHighest
+        // Form icon above the day number.
+        Box(Modifier.height(13.dp), contentAlignment = Alignment.Center) {
+            if (form != null) {
+                Icon(
+                    Icons.Filled.Description,
+                    contentDescription = "Form",
+                    tint = formColor(form),
+                    modifier = Modifier.size(12.dp),
+                )
             }
-            val ink = if (mark == Mark.PLANNED) mutedText() else Color.White
-            Box(
-                Modifier.size(30.dp).clip(CircleShape).background(fill),
-                contentAlignment = Alignment.Center,
-            ) {
-                Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                    Text(
-                        tally(pills),
-                        color = ink,
-                        fontSize = 10.sp,
-                        lineHeight = 10.sp,
-                        fontWeight = FontWeight.Bold,
-                        maxLines = 1,
+        }
+        Box(Modifier.fillMaxWidth().aspectRatio(1f), contentAlignment = Alignment.Center) {
+            val ring = mark?.let { markColor(it) }
+            if (ring != null) {
+                Box(Modifier.fillMaxSize(0.84f).border(2.dp, ring, CircleShape))
+            }
+            Text(
+                "${date.dayOfMonth}",
+                style = MaterialTheme.typography.labelLarge,
+                fontWeight = if (isToday) FontWeight.Bold else FontWeight.Medium,
+                color = if (mark == null) mutedText() else MaterialTheme.colorScheme.onSurface,
+            )
+            if (mark != null && ring != null) {
+                Text(
+                    tally(pills),
+                    color = ring,
+                    fontSize = 8.sp,
+                    lineHeight = 8.sp,
+                    fontWeight = FontWeight.Bold,
+                    maxLines = 1,
+                    modifier = Modifier.align(Alignment.BottomStart).padding(start = 1.dp),
+                )
+                // Check-in done or not, only where a check-in was possible.
+                if (mark != Mark.PLANNED) {
+                    Icon(
+                        if (hasCheckin) Icons.Filled.Check else Icons.Filled.Close,
+                        contentDescription = if (hasCheckin) "Check-in done" else "No check-in",
+                        tint = ring,
+                        modifier = Modifier.align(Alignment.BottomEnd).size(10.dp),
                     )
-                    // Check-in done or not, only where a check-in was possible.
-                    if (mark != Mark.PLANNED) {
-                        Icon(
-                            if (hasCheckin) Icons.Filled.Check else Icons.Filled.Close,
-                            contentDescription = if (hasCheckin) "Check-in done" else "No check-in",
-                            tint = ink,
-                            modifier = Modifier.size(9.dp),
-                        )
-                    }
                 }
             }
         }
@@ -224,15 +255,20 @@ private fun DayCell(
 private fun Legend() {
     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
         Row(horizontalArrangement = Arrangement.spacedBy(16.dp)) {
-            LegendItem(GoodFill, "Taken", Modifier.weight(1f))
-            LegendItem(BadFill, "Missed", Modifier.weight(1f))
+            LegendRing(GoodFill, "Taken", Modifier.weight(1f))
+            LegendRing(BadFill, "Missed", Modifier.weight(1f))
         }
         Row(horizontalArrangement = Arrangement.spacedBy(16.dp)) {
-            LegendItem(TodayFill, "Today", Modifier.weight(1f))
-            LegendItem(MaterialTheme.colorScheme.surfaceContainerHighest, "Planned", Modifier.weight(1f))
+            LegendRing(TodayFill, "Due today", Modifier.weight(1f))
+            LegendRing(MaterialTheme.colorScheme.outline, "Planned", Modifier.weight(1f))
+        }
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Icon(Icons.Filled.Description, contentDescription = null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(14.dp))
+            Spacer(Modifier.size(8.dp))
+            Text("Form due (green when done)", style = MaterialTheme.typography.labelMedium, color = mutedText())
         }
         Text(
-            "I, II, III: pills that day.  \u2713 or \u2717: check-in done or not.",
+            "I, II, III: pills that day.  ✓ or ✗: check-in done or not.",
             style = MaterialTheme.typography.labelSmall,
             color = mutedText(),
         )
@@ -240,9 +276,9 @@ private fun Legend() {
 }
 
 @Composable
-private fun LegendItem(color: Color, label: String, modifier: Modifier = Modifier) {
+private fun LegendRing(color: Color, label: String, modifier: Modifier = Modifier) {
     Row(modifier, verticalAlignment = Alignment.CenterVertically) {
-        Box(Modifier.size(12.dp).clip(CircleShape).background(color))
+        Box(Modifier.size(14.dp).border(2.dp, color, CircleShape))
         Spacer(Modifier.size(8.dp))
         Text(label, style = MaterialTheme.typography.labelMedium, color = mutedText())
     }
@@ -287,6 +323,38 @@ private fun DayDetails(data: AppData, date: LocalDate) {
                     TextButton(onClick = { Logic.unmarkTaken(ctx, date) }) { Text("Undo") }
                 } else if (plan.pills > 0) {
                     TextButton(onClick = { Logic.markTaken(ctx, date) }) { Text("Mark taken") }
+                }
+            }
+        }
+
+        val forms = Logic.formsOn(data, date)
+        if (forms.isNotEmpty()) {
+            HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f))
+            Text("Forms", style = MaterialTheme.typography.labelLarge, color = mutedText())
+            forms.forEach { f ->
+                val done = Logic.formDone(f, date)
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Column(Modifier.weight(1f)) {
+                        Text(f.name, style = MaterialTheme.typography.bodyMedium)
+                        Text(
+                            when {
+                                done -> "Done"
+                                date.isBefore(today) -> "Not done (was due at ${Logic.fmtTime(f.time)})"
+                                else -> "Due at ${Logic.fmtTime(f.time)}"
+                            },
+                            style = MaterialTheme.typography.labelSmall,
+                            color = when {
+                                done -> goodText()
+                                date.isBefore(today) -> badText()
+                                else -> mutedText()
+                            },
+                        )
+                    }
+                    if (!date.isAfter(today)) {
+                        TextButton(onClick = { Logic.setFormDone(ctx, f.id, date, !done) }) {
+                            Text(if (done) "Undo" else "Mark done")
+                        }
+                    }
                 }
             }
         }

@@ -19,6 +19,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.CheckCircle
+import androidx.compose.material.icons.filled.Description
 import androidx.compose.material.icons.filled.EventAvailable
 import androidx.compose.material.icons.filled.Inventory2
 import androidx.compose.material.icons.filled.Mood
@@ -72,6 +73,7 @@ fun TodayScreen(data: AppData) {
         ScreenTitle("Cadence", longDate(today))
         UpdateBanner()
         DoseHero(data, today)
+        FormsTodayCard(data, today)
         CheckInCard(data, today)
         MeasureCard(data)
         Spacer(Modifier.size(8.dp))
@@ -86,6 +88,36 @@ private fun UpdateBanner() {
 
     SectionCard("A new version is ready", Icons.Filled.SystemUpdate) {
         UpdateControls(st)
+    }
+}
+
+@Composable
+private fun FormsTodayCard(data: AppData, today: LocalDate) {
+    val ctx = LocalContext.current
+    val forms = Logic.formsOn(data, today)
+    if (forms.isEmpty()) return
+
+    SectionCard(if (forms.size == 1) "Form today" else "Forms today", Icons.Filled.Description) {
+        forms.forEach { f ->
+            val done = Logic.formDone(f, today)
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Column(Modifier.weight(1f)) {
+                    Text(f.name, style = MaterialTheme.typography.titleSmall)
+                    Text(
+                        if (done) "Done" else "Due at ${Logic.fmtTime(f.time)}",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = if (done) goodText() else mutedText(),
+                    )
+                }
+                if (done) {
+                    TextButton(onClick = { Logic.setFormDone(ctx, f.id, today, false) }) { Text("Undo") }
+                } else {
+                    Button(onClick = { Logic.setFormDone(ctx, f.id, today, true) }, shape = RoundedCornerShape(14.dp)) {
+                        Text("Done")
+                    }
+                }
+            }
+        }
     }
 }
 

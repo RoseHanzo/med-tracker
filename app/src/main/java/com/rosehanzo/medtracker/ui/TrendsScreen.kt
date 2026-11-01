@@ -136,7 +136,7 @@ fun TrendsScreen(data: AppData) {
             ChartCard(
                 title = def.name,
                 icon = Icons.Filled.Mood,
-                subtitle = if (def.highIsGood) "Higher is better" else "Higher is worse",
+                subtitle = "1 = none · 10 = severe",
                 latest = pts.maxByOrNull { it.first }?.let { "${it.second.toInt()}/10" },
                 series = listOf(Series(def.name, if (def.highIsGood) Color(0xFF2E9D6B) else Color(0xFFE88A3C), pts)),
                 start = start, xMin = xMin, xMax = xMax,

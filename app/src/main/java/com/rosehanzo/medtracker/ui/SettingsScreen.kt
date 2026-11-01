@@ -34,6 +34,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Backup
 import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.Description
 import androidx.compose.material.icons.filled.FavoriteBorder
 import androidx.compose.material.icons.filled.Inventory2
 import androidx.compose.material.icons.filled.Medication
@@ -44,7 +45,7 @@ import androidx.compose.material.icons.filled.Schedule
 import androidx.compose.material.icons.filled.SystemUpdate
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
-import androidx.compose.material3.Checkbox
+import androidx.compose.material3.RadioButton
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilledTonalIconButton
 import androidx.compose.material3.FilterChip
@@ -80,6 +81,7 @@ import androidx.health.connect.client.PermissionController
 import com.rosehanzo.medtracker.data.AppData
 import com.rosehanzo.medtracker.data.Codec
 import com.rosehanzo.medtracker.data.Logic
+import com.rosehanzo.medtracker.data.FormReminder
 import com.rosehanzo.medtracker.data.Phase
 import com.rosehanzo.medtracker.data.Settings
 import com.rosehanzo.medtracker.data.Store
@@ -104,6 +106,7 @@ fun SettingsScreen(data: AppData) {
         ScreenTitle("Settings")
         PlanSection(s)
         ScheduleSection(s)
+        FormsSection(data)
         ReminderSection(s)
         SupplySection(data)
         TrackingSection(s)
@@ -384,6 +387,172 @@ private fun TimeButton(label: String, minutes: Int, modifier: Modifier = Modifie
     }
 }
 
+// ---------- Forms ----------
+
+fun repeatLabel(everyWeeks: Int): String = when (everyWeeks) {
+    0 -> "Once"
+    1 -> "Every week"
+    else -> "Every $everyWeeks weeks"
+}
+
+private fun formSummary(f: FormReminder, today: LocalDate): String {
+    val time = Logic.fmtTime(f.time)
+    val start = LocalDate.parse(f.start)
+    if (f.everyWeeks == 0) return "${mediumDate(start)} at $time"
+    val next = Logic.nextOccurrence(f, today)
+    return if (next == null) "${repeatLabel(f.everyWeeks)} at $time"
+    else "${repeatLabel(f.everyWeeks)} at $time · next ${mediumDate(next)}"
+}
+
+@Composable
+private fun FormsSection(data: AppData) {
+    val ctx = LocalContext.current
+    var editing by remember { mutableStateOf<FormReminder?>(null) }
+    val today = LocalDate.now()
+
+    SectionCard("Forms", Icons.Filled.Description) {
+        Text(
+            "Reminders for forms to fill in. They show on the calendar and remind you at the time you pick, until you tap Done.",
+            style = MaterialTheme.typography.bodySmall,
+            color = mutedText(),
+        )
+        if (data.forms.isEmpty()) {
+            Text("No form reminders yet.", style = MaterialTheme.typography.bodyMedium, color = mutedText())
+        }
+        data.forms.sortedBy { Logic.nextOccurrence(it, today) ?: LocalDate.MAX }.forEach { f ->
+            Row(
+                Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(16.dp))
+                    .background(MaterialTheme.colorScheme.surfaceContainer)
+                    .clickable { editing = f }
+                    .padding(12.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                IconBadge(Icons.Filled.Description, size = 30)
+                Spacer(Modifier.width(12.dp))
+                Column(Modifier.weight(1f)) {
+                    Text(f.name, style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
+                    Text(formSummary(f, today), style = MaterialTheme.typography.bodySmall, color = mutedText())
+                }
+                Text("Edit", style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.primary)
+            }
+        }
+        OutlinedButton(
+            onClick = {
+                editing = FormReminder(id = "f${System.currentTimeMillis()}", start = today.plusDays(1).toString())
+            },
+            shape = RoundedCornerShape(16.dp),
+            modifier = Modifier.fillMaxWidth(),
+        ) {
+            Icon(Icons.Filled.Add, contentDescription = null, modifier = Modifier.size(18.dp))
+            Spacer(Modifier.width(6.dp))
+            Text("Add a form reminder")
+        }
+    }
+
+    editing?.let { form ->
+        FormDialog(
+            initial = form,
+            isNew = data.forms.none { it.id == form.id },
+            onDismiss = { editing = null },
+            onSave = {
+                Logic.saveForm(ctx, it)
+                editing = null
+            },
+            onDelete = {
+                Logic.deleteForm(ctx, form.id)
+                editing = null
+            },
+        )
+    }
+}
+
+@Composable
+private fun FormDialog(
+    initial: FormReminder,
+    isNew: Boolean,
+    onDismiss: () -> Unit,
+    onSave: (FormReminder) -> Unit,
+    onDelete: () -> Unit,
+) {
+    val ctx = LocalContext.current
+    var name by remember { mutableStateOf(initial.name) }
+    var start by remember { mutableStateOf(LocalDate.parse(initial.start)) }
+    var time by remember { mutableIntStateOf(initial.time) }
+    var every by remember { mutableIntStateOf(initial.everyWeeks) }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(if (isNew) "New form reminder" else "Edit form reminder") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                OutlinedTextField(
+                    value = name,
+                    onValueChange = { if (it.length <= 30) name = it },
+                    label = { Text("Name") },
+                    singleLine = true,
+                    shape = RoundedCornerShape(14.dp),
+                )
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    OutlinedButton(onClick = { pickDate(ctx, start) { start = it } }, modifier = Modifier.weight(1f)) {
+                        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                            Text(if (every == 0) "Date" else "First date", style = MaterialTheme.typography.labelSmall)
+                            Text(shortDate(start), style = MaterialTheme.typography.titleSmall)
+                        }
+                    }
+                    OutlinedButton(
+                        onClick = {
+                            TimePickerDialog(
+                                ctx,
+                                { _, h, m -> time = h * 60 + m },
+                                time / 60,
+                                time % 60,
+                                DateFormat.is24HourFormat(ctx),
+                            ).show()
+                        },
+                        modifier = Modifier.weight(1f),
+                    ) {
+                        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                            Text("Time", style = MaterialTheme.typography.labelSmall)
+                            Text(Logic.fmtTime(time), style = MaterialTheme.typography.titleSmall)
+                        }
+                    }
+                }
+                Text("Repeats", style = MaterialTheme.typography.bodyMedium)
+                Column {
+                    listOf(0, 1, 2, 4).forEach { w ->
+                        Row(
+                            Modifier
+                                .fillMaxWidth()
+                                .clip(RoundedCornerShape(10.dp))
+                                .clickable { every = w },
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            RadioButton(selected = every == w, onClick = { every = w })
+                            Text(repeatLabel(w), style = MaterialTheme.typography.bodyMedium)
+                        }
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(
+                enabled = name.isNotBlank(),
+                onClick = {
+                    onSave(initial.copy(name = name.trim(), start = start.toString(), time = time, everyWeeks = every))
+                },
+            ) { Text("Save") }
+        },
+        dismissButton = {
+            Row {
+                if (!isNew) TextButton(onClick = onDelete) { Text("Delete", color = badText()) }
+                TextButton(onClick = onDismiss) { Text("Cancel") }
+            }
+        },
+    )
+}
+
 // ---------- Reminders ----------
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -575,7 +744,6 @@ private fun TrackingSection(s: Settings) {
 
     if (adding) {
         var name by remember { mutableStateOf("") }
-        var highIsGood by remember { mutableStateOf(false) }
         AlertDialog(
             onDismissRequest = { adding = false },
             title = { Text("Track something new") },
@@ -587,10 +755,11 @@ private fun TrackingSection(s: Settings) {
                         label = { Text("Name, e.g. Jaw clenching") },
                         singleLine = true,
                     )
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Checkbox(checked = highIsGood, onCheckedChange = { highIsGood = it })
-                        Text("Higher is better (like mood)", style = MaterialTheme.typography.bodyMedium)
-                    }
+                    Text(
+                        "Rated 1 = none to 10 = severe, like everything else. Name it so more is worse, e.g. \"Low motivation\".",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = mutedText(),
+                    )
                 }
             },
             confirmButton = {
@@ -598,11 +767,7 @@ private fun TrackingSection(s: Settings) {
                     enabled = name.isNotBlank(),
                     onClick = {
                         val id = "c${System.currentTimeMillis()}"
-                        val def = if (highIsGood) {
-                            SymptomDef(id, name.trim(), "Very low", "Great", highIsGood = true, custom = true)
-                        } else {
-                            SymptomDef(id, name.trim(), "None", "Severe", custom = true)
-                        }
+                        val def = SymptomDef(id, name.trim(), "None", "Severe", custom = true)
                         Logic.updateSettings(ctx, reschedule = false) { it.copy(symptoms = it.symptoms + def) }
                         adding = false
                     },
