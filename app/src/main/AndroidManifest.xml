@@ -10,6 +10,11 @@
     <uses-permission android:name="android.permission.VIBRATE" />
     <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
 
+    <!-- In-app updates from GitHub -->
+    <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
+    <uses-permission android:name="android.permission.UPDATE_PACKAGES_WITHOUT_USER_ACTION" />
+
     <!-- Health Connect (Samsung Health shares data through it) -->
     <uses-permission android:name="android.permission.health.READ_WEIGHT" />
     <uses-permission android:name="android.permission.health.READ_BLOOD_PRESSURE" />
@@ -55,6 +60,10 @@
 
         <receiver
             android:name=".reminders.AlarmReceiver"
+            android:exported="false" />
+
+        <receiver
+            android:name=".update.InstallReceiver"
             android:exported="false" />
 
         <receiver

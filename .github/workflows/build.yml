@@ -59,13 +59,16 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          cp app/build/outputs/apk/release/app-release.apk MedTracker.apk
+          cp app/build/outputs/apk/release/app-release.apk Cadence.apk
           if ! gh release view latest >/dev/null 2>&1; then
-            gh release create latest --title "Med Tracker (latest)" \
-              --notes "Download MedTracker.apk below on your phone and open it to install or update."
+            gh release create latest --title "Cadence" \
+              --notes "Download Cadence.apk below on your phone and open it to install."
           fi
-          gh release upload latest MedTracker.apk --clobber
-          gh release edit latest --notes "Build ${{ github.run_number }} from $(date -u +'%d %b %Y %H:%M') UTC. Download MedTracker.apk below on your phone and open it to install or update."
+          gh release upload latest Cadence.apk --clobber
+          gh release delete-asset latest MedTracker.apk --yes 2>/dev/null || true
+          # The app reads the build number from this title to spot updates, so set it last.
+          gh release edit latest --title "Cadence build ${{ github.run_number }}" \
+            --notes "Built $(date -u +'%d %b %Y %H:%M') UTC. Already have Cadence? Update from inside the app (Settings, Updates). New install: download Cadence.apk below on your phone and open it."
 
       - name: Save build log
         if: always()

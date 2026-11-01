@@ -1,5 +1,6 @@
 package com.rosehanzo.medtracker.ui
 
+import android.app.DatePickerDialog
 import android.app.TimePickerDialog
 import android.content.ActivityNotFoundException
 import android.content.Context
@@ -17,26 +18,40 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.aspectRatio
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.Backup
 import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.FavoriteBorder
+import androidx.compose.material.icons.filled.Inventory2
+import androidx.compose.material.icons.filled.Medication
+import androidx.compose.material.icons.filled.Mood
+import androidx.compose.material.icons.filled.Notifications
+import androidx.compose.material.icons.filled.Remove
+import androidx.compose.material.icons.filled.Schedule
+import androidx.compose.material.icons.filled.SystemUpdate
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Checkbox
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.FilledTonalIconButton
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
@@ -45,7 +60,9 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -60,15 +77,16 @@ import androidx.compose.ui.unit.dp
 import androidx.core.app.NotificationManagerCompat
 import androidx.health.connect.client.HealthConnectClient
 import androidx.health.connect.client.PermissionController
-import com.rosehanzo.medtracker.BuildConfig
 import com.rosehanzo.medtracker.data.AppData
 import com.rosehanzo.medtracker.data.Codec
 import com.rosehanzo.medtracker.data.Logic
+import com.rosehanzo.medtracker.data.Phase
 import com.rosehanzo.medtracker.data.Settings
 import com.rosehanzo.medtracker.data.Store
 import com.rosehanzo.medtracker.data.SymptomDef
 import com.rosehanzo.medtracker.health.HealthSync
 import com.rosehanzo.medtracker.reminders.Reminders
+import com.rosehanzo.medtracker.update.Updater
 import kotlinx.coroutines.launch
 import java.time.LocalDate
 
@@ -83,109 +101,268 @@ fun SettingsScreen(data: AppData) {
             .padding(horizontal = 16.dp, vertical = 12.dp),
         verticalArrangement = Arrangement.spacedBy(16.dp),
     ) {
-        Text("Settings", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.SemiBold)
-        MedicationSection(s)
+        ScreenTitle("Settings")
+        PlanSection(s)
+        ScheduleSection(s)
         ReminderSection(s)
-        SupplySection(s)
+        SupplySection(data)
         TrackingSection(s)
         HealthSection(s)
+        UpdateSection()
         BackupSection()
-        Text(
-            "Med Tracker ${BuildConfig.VERSION_NAME}",
-            style = MaterialTheme.typography.labelSmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-            modifier = Modifier.padding(bottom = 8.dp),
-        )
+        Spacer(Modifier.size(8.dp))
     }
 }
 
-// ---------- Medication & schedule ----------
+// ---------- Dose plan ----------
 
-@OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun MedicationSection(s: Settings) {
+private fun PlanSection(s: Settings) {
     val ctx = LocalContext.current
+    var editing by remember { mutableStateOf<Phase?>(null) }
     var name by remember { mutableStateOf(s.medName) }
+    val phases = Logic.sortedPhases(s)
+    val current = Logic.phaseFor(s, LocalDate.now())
 
-    SectionCard("Medication") {
+    SectionCard("Dose plan", Icons.Filled.Medication) {
         OutlinedTextField(
             value = name,
             onValueChange = {
                 name = it
                 if (it.isNotBlank()) Logic.updateSettings(ctx, reschedule = false) { st -> st.copy(medName = it.trim()) }
             },
-            label = { Text("Name") },
+            label = { Text("Medication") },
             singleLine = true,
+            shape = RoundedCornerShape(14.dp),
             modifier = Modifier.fillMaxWidth(),
         )
-
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Text("Doses a day", style = MaterialTheme.typography.bodyLarge, modifier = Modifier.weight(1f))
-            Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                (1..3).forEach { n ->
-                    FilterChip(
-                        selected = s.dosesPerDay == n,
-                        onClick = { Logic.updateSettings(ctx) { it.copy(dosesPerDay = n) } },
-                        label = { Text("$n") },
-                    )
-                }
-            }
-        }
         Text(
-            "One pill per dose. Each dose has its own reminder.",
+            "Taken once a day. Each phase runs until the next one starts, and the last one carries on until you change it.",
             style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            color = mutedText(),
         )
+        if (phases.isEmpty()) {
+            Text("No phases yet, so there are no reminders.", style = MaterialTheme.typography.bodyMedium, color = badText())
+        }
+        phases.forEachIndexed { i, p ->
+            PhaseRow(p, phases.getOrNull(i + 1), isCurrent = p.id == current?.id) { editing = p }
+        }
+        OutlinedButton(
+            onClick = { editing = newPhase(phases) },
+            shape = RoundedCornerShape(16.dp),
+            modifier = Modifier.fillMaxWidth(),
+        ) {
+            Icon(Icons.Filled.Add, contentDescription = null, modifier = Modifier.size(18.dp))
+            Spacer(Modifier.width(6.dp))
+            Text("Add a phase")
+        }
+    }
 
-        HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
-        Text("Reminder times", style = MaterialTheme.typography.labelLarge)
-        for (slot in 0 until s.dosesPerDay) {
-            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                Text(
-                    if (s.dosesPerDay == 1) "Dose" else "Dose ${slot + 1}",
-                    style = MaterialTheme.typography.bodyLarge,
-                    modifier = Modifier.weight(1f),
-                )
-                TimeButton("Weekdays", s.weekdayTimes[slot]) { m ->
-                    Logic.updateSettings(ctx) { it.copy(weekdayTimes = it.weekdayTimes.toMutableList().also { l -> l[slot] = m }) }
+    editing?.let { phase ->
+        PhaseDialog(
+            initial = phase,
+            isNew = s.phases.none { it.id == phase.id },
+            onDismiss = { editing = null },
+            onSave = {
+                Logic.savePhase(ctx, it)
+                editing = null
+            },
+            onDelete = {
+                Logic.deletePhase(ctx, phase.id)
+                editing = null
+            },
+        )
+    }
+}
+
+private fun newPhase(phases: List<Phase>): Phase {
+    val today = LocalDate.now()
+    val last = phases.lastOrNull()
+    val start = when {
+        last == null -> today
+        last.end != null -> LocalDate.parse(last.end).plusDays(1)
+        else -> maxOf(today, LocalDate.parse(last.start).plusDays(7))
+    }
+    return Phase(
+        id = "p${System.currentTimeMillis()}",
+        start = start.toString(),
+        end = null,
+        pills = last?.pills ?: 1,
+        daysOff = last?.daysOff ?: emptySet(),
+    )
+}
+
+private fun phaseRange(p: Phase, next: Phase?): String {
+    val start = LocalDate.parse(p.start)
+    return when {
+        p.end != null -> "${shortDate(start)} – ${shortDate(LocalDate.parse(p.end))}"
+        next != null -> "${shortDate(start)} – ${shortDate(LocalDate.parse(next.start).minusDays(1))}"
+        else -> "From ${shortDate(start)}"
+    }
+}
+
+private fun phaseSummary(p: Phase): String {
+    val amount = "${Logic.pillWord(p.pills)} a day"
+    if (p.daysOff.isEmpty()) return "$amount, every day"
+    val off = p.daysOff.sorted().joinToString(", ") { WEEKDAY_SHORT[it - 1] }
+    return "$amount, none on $off"
+}
+
+@Composable
+private fun PhaseRow(p: Phase, next: Phase?, isCurrent: Boolean, onClick: () -> Unit) {
+    val accent = if (isCurrent) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outlineVariant
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(16.dp))
+            .background(if (isCurrent) MaterialTheme.colorScheme.primary.copy(alpha = 0.08f) else MaterialTheme.colorScheme.surfaceContainer)
+            .clickable(onClick = onClick)
+            .padding(12.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Box(Modifier.width(4.dp).height(40.dp).clip(RoundedCornerShape(2.dp)).background(accent))
+        Spacer(Modifier.width(12.dp))
+        Column(Modifier.weight(1f)) {
+            Text(phaseRange(p, next), style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
+            Text(phaseSummary(p), style = MaterialTheme.typography.bodySmall, color = mutedText())
+        }
+        if (isCurrent) {
+            Pill("Now", MaterialTheme.colorScheme.primary, MaterialTheme.colorScheme.onPrimary)
+        } else {
+            Text("Edit", style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.primary)
+        }
+    }
+}
+
+private fun pickDate(ctx: Context, initial: LocalDate, onPick: (LocalDate) -> Unit) {
+    DatePickerDialog(
+        ctx,
+        { _, y, m, d -> onPick(LocalDate.of(y, m + 1, d)) },
+        initial.year,
+        initial.monthValue - 1,
+        initial.dayOfMonth,
+    ).show()
+}
+
+@Composable
+private fun PhaseDialog(
+    initial: Phase,
+    isNew: Boolean,
+    onDismiss: () -> Unit,
+    onSave: (Phase) -> Unit,
+    onDelete: () -> Unit,
+) {
+    val ctx = LocalContext.current
+    var start by remember { mutableStateOf(LocalDate.parse(initial.start)) }
+    var hasEnd by remember { mutableStateOf(initial.end != null) }
+    var end by remember { mutableStateOf(initial.end?.let { LocalDate.parse(it) } ?: LocalDate.parse(initial.start).plusDays(6)) }
+    var pills by remember { mutableIntStateOf(initial.pills.coerceIn(1, Logic.MAX_PILLS)) }
+    var daysOff by remember { mutableStateOf(initial.daysOff) }
+    val endOk = !hasEnd || !end.isBefore(start)
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(if (isNew) "New phase" else "Edit phase") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(14.dp)) {
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    OutlinedButton(onClick = { pickDate(ctx, start) { start = it } }, modifier = Modifier.weight(1f)) {
+                        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                            Text("Starts", style = MaterialTheme.typography.labelSmall)
+                            Text(shortDate(start), style = MaterialTheme.typography.titleSmall)
+                        }
+                    }
+                    OutlinedButton(
+                        onClick = { pickDate(ctx, end) { end = it; hasEnd = true } },
+                        enabled = hasEnd,
+                        modifier = Modifier.weight(1f),
+                    ) {
+                        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                            Text("Ends", style = MaterialTheme.typography.labelSmall)
+                            Text(if (hasEnd) shortDate(end) else "Open", style = MaterialTheme.typography.titleSmall)
+                        }
+                    }
                 }
-                TimeButton("Weekends", s.weekendTimes[slot]) { m ->
-                    Logic.updateSettings(ctx) { it.copy(weekendTimes = it.weekendTimes.toMutableList().also { l -> l[slot] = m }) }
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text("Has an end date", style = MaterialTheme.typography.bodyMedium, modifier = Modifier.weight(1f))
+                    Switch(checked = hasEnd, onCheckedChange = { hasEnd = it })
+                }
+                if (!endOk) {
+                    Text("The end date is before the start date.", style = MaterialTheme.typography.bodySmall, color = badText())
+                }
+
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text("Pills each day", style = MaterialTheme.typography.bodyMedium, modifier = Modifier.weight(1f))
+                    FilledTonalIconButton(onClick = { if (pills > 1) pills-- }, enabled = pills > 1) {
+                        Icon(Icons.Filled.Remove, contentDescription = "Fewer")
+                    }
+                    Text(
+                        "$pills",
+                        style = MaterialTheme.typography.headlineSmall,
+                        fontWeight = FontWeight.Bold,
+                        modifier = Modifier.padding(horizontal = 12.dp),
+                    )
+                    FilledTonalIconButton(onClick = { if (pills < Logic.MAX_PILLS) pills++ }, enabled = pills < Logic.MAX_PILLS) {
+                        Icon(Icons.Filled.Add, contentDescription = "More")
+                    }
+                }
+
+                Text("Days with no pills", style = MaterialTheme.typography.bodyMedium)
+                WeekdayToggles(daysOff) { day -> daysOff = if (day in daysOff) daysOff - day else daysOff + day }
+                if (daysOff.size == 7) {
+                    Text("Every day is off, so this phase has no doses.", style = MaterialTheme.typography.bodySmall, color = badText())
                 }
             }
-        }
-
-        Text("Weekend days", style = MaterialTheme.typography.labelLarge)
-        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-            listOf("M", "T", "W", "T", "F", "S", "S").forEachIndexed { i, label ->
-                val day = i + 1
-                val on = day in s.weekendDays
-                Box(
-                    Modifier
-                        .weight(1f)
-                        .aspectRatio(1f)
-                        .clip(CircleShape)
-                        .background(if (on) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.surfaceContainerHigh)
-                        .clickable {
-                            Logic.updateSettings(ctx) {
-                                it.copy(weekendDays = if (on) it.weekendDays - day else it.weekendDays + day)
-                            }
-                        },
-                    contentAlignment = Alignment.Center,
-                ) {
-                    Text(
-                        label,
-                        style = MaterialTheme.typography.labelLarge,
-                        color = if (on) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurfaceVariant,
+        },
+        confirmButton = {
+            TextButton(
+                enabled = endOk,
+                onClick = {
+                    onSave(
+                        initial.copy(
+                            start = start.toString(),
+                            end = if (hasEnd) end.toString() else null,
+                            pills = pills,
+                            daysOff = daysOff,
+                        ),
                     )
-                }
+                },
+            ) { Text("Save") }
+        },
+        dismissButton = {
+            Row {
+                if (!isNew) TextButton(onClick = onDelete) { Text("Delete", color = badText()) }
+                TextButton(onClick = onDismiss) { Text("Cancel") }
+            }
+        },
+    )
+}
+
+// ---------- Dose time ----------
+
+@Composable
+private fun ScheduleSection(s: Settings) {
+    val ctx = LocalContext.current
+    SectionCard("Dose time", Icons.Filled.Schedule) {
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            TimeButton("Weekdays", s.weekdayTime, Modifier.weight(1f)) { m ->
+                Logic.updateSettings(ctx) { it.copy(weekdayTime = m) }
+            }
+            TimeButton("Weekends", s.weekendTime, Modifier.weight(1f)) { m ->
+                Logic.updateSettings(ctx) { it.copy(weekendTime = m) }
+            }
+        }
+        Text("Your weekend days", style = MaterialTheme.typography.labelLarge)
+        WeekdayToggles(s.weekendDays) { day ->
+            Logic.updateSettings(ctx) {
+                it.copy(weekendDays = if (day in it.weekendDays) it.weekendDays - day else it.weekendDays + day)
             }
         }
     }
 }
 
 @Composable
-private fun TimeButton(label: String, minutes: Int, onPick: (Int) -> Unit) {
+private fun TimeButton(label: String, minutes: Int, modifier: Modifier = Modifier, onPick: (Int) -> Unit) {
     val ctx = LocalContext.current
     OutlinedButton(
         onClick = {
@@ -197,10 +374,12 @@ private fun TimeButton(label: String, minutes: Int, onPick: (Int) -> Unit) {
                 DateFormat.is24HourFormat(ctx),
             ).show()
         },
+        shape = RoundedCornerShape(16.dp),
+        modifier = modifier,
     ) {
-        Column(horizontalAlignment = Alignment.CenterHorizontally) {
-            Text(label, style = MaterialTheme.typography.labelSmall)
-            Text(Logic.fmtTime(minutes), style = MaterialTheme.typography.titleSmall)
+        Column(horizontalAlignment = Alignment.CenterHorizontally, modifier = Modifier.padding(vertical = 4.dp)) {
+            Text(label, style = MaterialTheme.typography.labelMedium)
+            Text(Logic.fmtTime(minutes), style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.SemiBold)
         }
     }
 }
@@ -218,15 +397,11 @@ private fun ReminderSection(s: Settings) {
         ctx.getSystemService(PowerManager::class.java)?.isIgnoringBatteryOptimizations(ctx.packageName) ?: true
     }
 
-    SectionCard("Reminders") {
+    SectionCard("Reminders", Icons.Filled.Notifications) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             Column(Modifier.weight(1f)) {
                 Text("Dose reminders", style = MaterialTheme.typography.bodyLarge)
-                Text(
-                    "Keeps reminding you until you tap Taken",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
+                Text("Keeps reminding you until you tap Taken", style = MaterialTheme.typography.bodySmall, color = mutedText())
             }
             Switch(checked = s.remindersOn, onCheckedChange = { on -> Logic.updateSettings(ctx) { it.copy(remindersOn = on) } })
         }
@@ -243,45 +418,35 @@ private fun ReminderSection(s: Settings) {
         }
 
         if (!notificationsOn) {
-            Warning("Notifications are switched off for this app, so reminders can't appear.")
-            Button(onClick = { openNotificationSettings(ctx) }, modifier = Modifier.fillMaxWidth()) {
-                Text("Turn on notifications")
-            }
+            Text("Notifications are switched off for Cadence, so reminders can't appear.", style = MaterialTheme.typography.bodyMedium, color = badText())
+            Button(onClick = { openNotificationSettings(ctx) }, modifier = Modifier.fillMaxWidth()) { Text("Turn on notifications") }
         }
         if (!exactOk) {
-            Warning("Reminders may arrive a few minutes late until you allow exact alarms.")
-            Button(onClick = { openExactAlarmSettings(ctx) }, modifier = Modifier.fillMaxWidth()) {
-                Text("Allow exact alarms")
-            }
+            Text("Reminders may arrive a few minutes late until you allow exact alarms.", style = MaterialTheme.typography.bodyMedium, color = badText())
+            Button(onClick = { openExactAlarmSettings(ctx) }, modifier = Modifier.fillMaxWidth()) { Text("Allow exact alarms") }
         }
         if (!batteryFree) {
             Text(
                 "Samsung phones can put apps to sleep and delay reminders. Allowing unrestricted battery use stops that.",
                 style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                color = mutedText(),
             )
             OutlinedButton(onClick = { openBatterySettings(ctx) }, modifier = Modifier.fillMaxWidth()) {
-                Text("Don't put this app to sleep")
+                Text("Don't put Cadence to sleep")
             }
         }
         OutlinedButton(
-            onClick = {
-                if (!Reminders.sendTest(ctx)) toast(ctx, "Turn on notifications first")
-            },
+            onClick = { if (!Reminders.sendTest(ctx)) toast(ctx, "Turn on notifications first") },
             modifier = Modifier.fillMaxWidth(),
         ) { Text("Send a test reminder") }
     }
 }
 
-@Composable
-private fun Warning(text: String) {
-    Text(text, style = MaterialTheme.typography.bodyMedium, color = badText())
-}
-
 private fun openNotificationSettings(ctx: Context) {
-    val i = Intent(AndroidSettings.ACTION_APP_NOTIFICATION_SETTINGS)
-        .putExtra(AndroidSettings.EXTRA_APP_PACKAGE, ctx.packageName)
-    safeStart(ctx, i)
+    safeStart(
+        ctx,
+        Intent(AndroidSettings.ACTION_APP_NOTIFICATION_SETTINGS).putExtra(AndroidSettings.EXTRA_APP_PACKAGE, ctx.packageName),
+    )
 }
 
 private fun openExactAlarmSettings(ctx: Context) {
@@ -309,20 +474,25 @@ private fun safeStart(ctx: Context, intent: Intent): Boolean = try {
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun SupplySection(s: Settings) {
+private fun SupplySection(data: AppData) {
     val ctx = LocalContext.current
+    val s = data.settings
     var dialog by remember { mutableStateOf<String?>(null) }
 
-    SectionCard("Pill supply") {
-        val days = Logic.daysOfSupply(s)
+    SectionCard("Pill supply", Icons.Filled.Inventory2) {
+        val days = Logic.daysOfSupply(data)
         Text(
-            if (days < 0) "Not set yet" else "${s.pillsLeft} pills · about $days days",
+            when {
+                days < 0 -> "Not set yet"
+                days >= 730 -> Logic.pillWord(s.pillsLeft)
+                else -> "${Logic.pillWord(s.pillsLeft)} · enough for $days days"
+            },
             style = MaterialTheme.typography.titleMedium,
         )
         Text(
-            "Goes down by one each time you mark a dose as taken.",
+            "Goes down by the day's pills each time you mark a dose as taken. Days left follow your plan.",
             style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            color = mutedText(),
         )
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             OutlinedButton(onClick = { dialog = "set" }, modifier = Modifier.weight(1f)) { Text("Set count") }
@@ -345,9 +515,7 @@ private fun SupplySection(s: Settings) {
             Logic.updateSettings(ctx, reschedule = false) { it.copy(pillsLeft = n, stockWarnDate = "") }
         }
         "add" -> NumberDialog("Pills in the new pack", 30, { dialog = null }) { n ->
-            Logic.updateSettings(ctx, reschedule = false) {
-                it.copy(pillsLeft = maxOf(it.pillsLeft, 0) + n, stockWarnDate = "")
-            }
+            Logic.updateSettings(ctx, reschedule = false) { it.copy(pillsLeft = maxOf(it.pillsLeft, 0) + n, stockWarnDate = "") }
         }
     }
 }
@@ -383,11 +551,11 @@ private fun TrackingSection(s: Settings) {
     val ctx = LocalContext.current
     var adding by remember { mutableStateOf(false) }
 
-    SectionCard("Daily check-in") {
+    SectionCard("Daily check-in", Icons.Filled.Mood) {
         Text(
             "Choose what appears in your check-in. Hidden items keep their history.",
             style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            color = mutedText(),
         )
         s.symptoms.forEach { def ->
             Row(verticalAlignment = Alignment.CenterVertically) {
@@ -396,7 +564,7 @@ private fun TrackingSection(s: Settings) {
                     Text(
                         "1 = ${def.low.lowercase()} · 10 = ${def.high.lowercase()}",
                         style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        color = mutedText(),
                     )
                 }
                 if (def.custom) {
@@ -441,10 +609,11 @@ private fun TrackingSection(s: Settings) {
                 TextButton(
                     enabled = name.isNotBlank(),
                     onClick = {
+                        val id = "c${System.currentTimeMillis()}"
                         val def = if (highIsGood) {
-                            SymptomDef("c${System.currentTimeMillis()}", name.trim(), "Very low", "Great", highIsGood = true, custom = true)
+                            SymptomDef(id, name.trim(), "Very low", "Great", highIsGood = true, custom = true)
                         } else {
-                            SymptomDef("c${System.currentTimeMillis()}", name.trim(), "None", "Severe", custom = true)
+                            SymptomDef(id, name.trim(), "None", "Severe", custom = true)
                         }
                         Logic.updateSettings(ctx, reschedule = false) { it.copy(symptoms = it.symptoms + def) }
                         adding = false
@@ -476,7 +645,7 @@ private fun HealthSection(s: Settings) {
         }
     }
 
-    SectionCard("Samsung Health") {
+    SectionCard("Samsung Health", Icons.Filled.FavoriteBorder) {
         when (status) {
             HealthConnectClient.SDK_AVAILABLE -> {
                 if (granted.isEmpty()) {
@@ -512,15 +681,11 @@ private fun HealthSection(s: Settings) {
                         }
                     }
                     if (s.hcLastSync > 0) {
-                        Text(
-                            "Last synced ${dayTime(s.hcLastSync)}",
-                            style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
+                        Text("Last synced ${dayTime(s.hcLastSync)}", style = MaterialTheme.typography.labelSmall, color = mutedText())
                     }
                 }
                 Row(verticalAlignment = Alignment.CenterVertically) {
-                    Text("Sync when I open the app", style = MaterialTheme.typography.bodyLarge, modifier = Modifier.weight(1f))
+                    Text("Sync when I open Cadence", style = MaterialTheme.typography.bodyLarge, modifier = Modifier.weight(1f))
                     Switch(
                         checked = s.hcAutoSync,
                         onCheckedChange = { on -> Logic.updateSettings(ctx, reschedule = false) { it.copy(hcAutoSync = on) } },
@@ -531,7 +696,7 @@ private fun HealthSection(s: Settings) {
                         "then Health Connect, and allow weight, blood pressure and heart rate. " +
                         "Samsung keeps stress scores inside Samsung Health, so other apps can't read them.",
                     style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    color = mutedText(),
                 )
             }
             HealthConnectClient.SDK_UNAVAILABLE_PROVIDER_UPDATE_REQUIRED -> {
@@ -554,6 +719,54 @@ private fun HealthSection(s: Settings) {
     }
 }
 
+// ---------- Updates ----------
+
+@Composable
+private fun UpdateSection() {
+    val ctx = LocalContext.current
+    val scope = rememberCoroutineScope()
+    val state by Updater.state.collectAsState()
+
+    SectionCard("Updates", Icons.Filled.SystemUpdate) {
+        Text("You're on build ${Updater.currentBuild}", style = MaterialTheme.typography.bodyMedium)
+        when (val st = state) {
+            is Updater.State.Checking -> Text("Checking…", style = MaterialTheme.typography.bodySmall, color = mutedText())
+            is Updater.State.UpToDate -> Text("You have the latest version.", style = MaterialTheme.typography.bodySmall, color = goodText())
+            is Updater.State.Ready -> {
+                Text("Build ${st.update.build} is ready to install.", style = MaterialTheme.typography.bodySmall, color = goodText())
+                Button(
+                    onClick = {
+                        if (!Updater.canInstall(ctx)) {
+                            toast(ctx, "Allow Cadence to install updates, then tap Update again")
+                            Updater.openInstallPermission(ctx)
+                        } else {
+                            scope.launch { Updater.downloadAndInstall(ctx, st.update) }
+                        }
+                    },
+                    modifier = Modifier.fillMaxWidth(),
+                ) { Text("Update now") }
+            }
+            is Updater.State.Downloading -> {
+                Text("Downloading… ${st.percent}%", style = MaterialTheme.typography.bodySmall, color = mutedText())
+                LinearProgressIndicator(progress = { st.percent / 100f }, modifier = Modifier.fillMaxWidth())
+            }
+            is Updater.State.Installing -> Text("Installing… confirm on the screen that appears.", style = MaterialTheme.typography.bodySmall, color = mutedText())
+            is Updater.State.Failed -> Text(st.message, style = MaterialTheme.typography.bodySmall, color = badText())
+            is Updater.State.Idle -> {}
+        }
+        if (state !is Updater.State.Downloading && state !is Updater.State.Installing && state !is Updater.State.Ready) {
+            OutlinedButton(onClick = { scope.launch { Updater.check(force = true) } }, modifier = Modifier.fillMaxWidth()) {
+                Text("Check for updates")
+            }
+        }
+        Text(
+            "Cadence also checks by itself when you open it. Updates keep all your data.",
+            style = MaterialTheme.typography.bodySmall,
+            color = mutedText(),
+        )
+    }
+}
+
 // ---------- Backup ----------
 
 @Composable
@@ -573,18 +786,18 @@ private fun BackupSection() {
         val parsed = runCatching {
             ctx.contentResolver.openInputStream(uri)?.use { Codec.decode(it.readBytes().decodeToString()) }
         }.getOrNull()
-        if (parsed == null) toast(ctx, "That file isn't a Med Tracker backup") else pending = parsed
+        if (parsed == null) toast(ctx, "That file isn't a Cadence backup") else pending = parsed
     }
 
-    SectionCard("Backup") {
+    SectionCard("Backup", Icons.Filled.Backup) {
         Text(
-            "Your data stays on this phone. Save a backup before reinstalling or changing phones.",
+            "Your data stays on this phone. Save a backup now and then, and before changing phones.",
             style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            color = mutedText(),
         )
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             OutlinedButton(
-                onClick = { exporter.launch("med-tracker-backup-${LocalDate.now()}.json") },
+                onClick = { exporter.launch("cadence-backup-${LocalDate.now()}.json") },
                 modifier = Modifier.weight(1f),
             ) { Text("Save backup") }
             OutlinedButton(
@@ -598,7 +811,7 @@ private fun BackupSection() {
         AlertDialog(
             onDismissRequest = { pending = null },
             title = { Text("Restore this backup?") },
-            text = { Text("This replaces everything currently in the app with the backup.") },
+            text = { Text("This replaces everything currently in Cadence with the backup.") },
             confirmButton = {
                 TextButton(onClick = {
                     Store.replaceAll(ctx, restored)

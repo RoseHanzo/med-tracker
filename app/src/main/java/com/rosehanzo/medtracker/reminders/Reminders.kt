@@ -19,11 +19,10 @@ import java.time.LocalDate
 import java.time.ZoneId
 
 /**
- * Dose reminders.
+ * The daily dose reminder.
  *
- * Each dose slot has two alarms:
- *  - DUE: fires at the scheduled time, posts the reminder and starts nagging.
- *  - NAG: repeats every few minutes until the dose is marked taken or the day ends.
+ *  - DUE fires at the dose time on the next day the plan has pills, posts the reminder and starts nagging.
+ *  - NAG repeats every few minutes until the dose is marked taken or the day ends.
  */
 object Reminders {
     const val CH_DOSE = "dose_reminders_v1"
@@ -32,18 +31,17 @@ object Reminders {
     const val ACTION_DUE = "com.rosehanzo.medtracker.action.DUE"
     const val ACTION_NAG = "com.rosehanzo.medtracker.action.NAG"
     const val ACTION_TAKE = "com.rosehanzo.medtracker.action.TAKE"
-    const val EXTRA_SLOT = "slot"
     const val EXTRA_DATE = "date"
 
+    private const val REQ_DUE = 100
+    private const val REQ_NAG = 200
+    private const val REQ_TAKE = 300
+    private const val REQ_OPEN = 400
+    private const val DOSE_ID = 1000
     private const val STOCK_ID = 2000
     private const val TEST_ID = 2001
     private const val IMMUTABLE = PendingIntent.FLAG_IMMUTABLE
-
-    private fun reqDue(slot: Int) = 100 + slot
-    private fun reqNag(slot: Int) = 200 + slot
-    private fun reqTake(slot: Int) = 300 + slot
-    private fun reqOpen(slot: Int) = 400 + slot
-    private fun notifId(slot: Int) = 1000 + slot
+    private val BRAND = 0xFF00696E.toInt()
 
     fun createChannels(ctx: Context) {
         val nm = ctx.getSystemService(NotificationManager::class.java) ?: return
@@ -56,23 +54,17 @@ object Reminders {
         nm.createNotificationChannel(stock)
     }
 
-    private fun alarmIntent(ctx: Context, action: String, slot: Int, date: String?): Intent {
-        val i = Intent(ctx, AlarmReceiver::class.java).setAction(action).putExtra(EXTRA_SLOT, slot)
+    private fun alarmIntent(ctx: Context, action: String, date: String?): Intent {
+        val i = Intent(ctx, AlarmReceiver::class.java).setAction(action)
         if (date != null) i.putExtra(EXTRA_DATE, date)
         return i
     }
 
-    private fun pending(ctx: Context, action: String, slot: Int, date: String, req: Int): PendingIntent =
-        PendingIntent.getBroadcast(
-            ctx, req, alarmIntent(ctx, action, slot, date),
-            PendingIntent.FLAG_UPDATE_CURRENT or IMMUTABLE,
-        )
+    private fun pending(ctx: Context, action: String, date: String, req: Int): PendingIntent =
+        PendingIntent.getBroadcast(ctx, req, alarmIntent(ctx, action, date), PendingIntent.FLAG_UPDATE_CURRENT or IMMUTABLE)
 
-    private fun existing(ctx: Context, action: String, slot: Int, req: Int): PendingIntent? =
-        PendingIntent.getBroadcast(
-            ctx, req, alarmIntent(ctx, action, slot, null),
-            PendingIntent.FLAG_NO_CREATE or IMMUTABLE,
-        )
+    private fun existing(ctx: Context, action: String, req: Int): PendingIntent? =
+        PendingIntent.getBroadcast(ctx, req, alarmIntent(ctx, action, null), PendingIntent.FLAG_NO_CREATE or IMMUTABLE)
 
     private fun setAlarm(ctx: Context, at: Long, pi: PendingIntent) {
         val am = ctx.getSystemService(AlarmManager::class.java) ?: return
@@ -83,8 +75,8 @@ object Reminders {
         }
     }
 
-    private fun cancelAlarm(ctx: Context, action: String, slot: Int, req: Int) {
-        val pi = existing(ctx, action, slot, req) ?: return
+    private fun cancelAlarm(ctx: Context, action: String, req: Int) {
+        val pi = existing(ctx, action, req) ?: return
         ctx.getSystemService(AlarmManager::class.java)?.cancel(pi)
         pi.cancel()
     }
@@ -94,103 +86,101 @@ object Reminders {
         return ctx.getSystemService(AlarmManager::class.java)?.canScheduleExactAlarms() ?: false
     }
 
-    private fun dueAt(s: Settings, date: LocalDate, slot: Int): Long {
-        val zone = ZoneId.systemDefault()
-        return date.atStartOfDay(zone)
-            .plusMinutes(Logic.slotMinutes(s, date, slot).toLong())
+    private fun dueAt(s: Settings, date: LocalDate): Long =
+        date.atStartOfDay(ZoneId.systemDefault())
+            .plusMinutes(Logic.doseMinutes(s, date).toLong())
             .toInstant().toEpochMilli()
-    }
 
     fun scheduleAll(ctx: Context) {
-        for (slot in 0..2) scheduleSlot(ctx, slot)
-    }
-
-    fun scheduleSlot(ctx: Context, slot: Int) {
         val d = Store.data(ctx)
         val s = d.settings
-        if (!s.remindersOn || slot >= s.dosesPerDay) {
-            cancelAlarm(ctx, ACTION_DUE, slot, reqDue(slot))
-            stopNag(ctx, slot)
+        if (!s.remindersOn) {
+            cancelAlarm(ctx, ACTION_DUE, REQ_DUE)
+            stopNag(ctx)
             return
         }
         val now = System.currentTimeMillis()
         val today = LocalDate.now()
 
-        // Next scheduled reminder.
+        // Next day with pills planned, at that day's dose time.
         var date = today
-        for (i in 0 until 8) {
-            val t = dueAt(s, date, slot)
-            if (t > now) {
-                setAlarm(ctx, t, pending(ctx, ACTION_DUE, slot, date.toString(), reqDue(slot)))
-                break
+        var scheduled = false
+        for (i in 0 until 400) {
+            val due = Logic.planFor(s, date).pills > 0 && !(date == today && Logic.taken(d, today))
+            if (due) {
+                val t = dueAt(s, date)
+                if (t > now) {
+                    setAlarm(ctx, t, pending(ctx, ACTION_DUE, date.toString(), REQ_DUE))
+                    scheduled = true
+                    break
+                }
             }
             date = date.plusDays(1)
         }
+        if (!scheduled) cancelAlarm(ctx, ACTION_DUE, REQ_DUE)
 
-        // A dose that's overdue today and not being nagged about (e.g. after a restart): start nagging.
-        val overdue = dueAt(s, today, slot) <= now && !Logic.taken(d, today, slot)
-        if (overdue && !nagActive(ctx, slot) && !today.isBefore(Logic.startDate(s))) {
-            setAlarm(ctx, now + 3_000L, pending(ctx, ACTION_NAG, slot, today.toString(), reqNag(slot)))
+        // Today's dose is overdue: make sure the nagging is running (e.g. after a restart).
+        val overdue = Logic.planFor(s, today).pills > 0 &&
+            dueAt(s, today) <= now &&
+            !Logic.taken(d, today) &&
+            !today.isBefore(Logic.startDate(s))
+        if (!overdue) {
+            stopNag(ctx)
+        } else if (existing(ctx, ACTION_NAG, REQ_NAG) == null) {
+            setAlarm(ctx, now + 3_000L, pending(ctx, ACTION_NAG, today.toString(), REQ_NAG))
         }
     }
 
-    private fun nagActive(ctx: Context, slot: Int): Boolean =
-        existing(ctx, ACTION_NAG, slot, reqNag(slot)) != null
-
-    private fun stopNag(ctx: Context, slot: Int) {
-        cancelAlarm(ctx, ACTION_NAG, slot, reqNag(slot))
-        NotificationManagerCompat.from(ctx).cancel(notifId(slot))
+    private fun stopNag(ctx: Context) {
+        cancelAlarm(ctx, ACTION_NAG, REQ_NAG)
+        NotificationManagerCompat.from(ctx).cancel(DOSE_ID)
     }
 
-    fun onTaken(ctx: Context, slot: Int) {
-        stopNag(ctx, slot)
-        scheduleSlot(ctx, slot)
+    fun onTaken(ctx: Context) {
+        stopNag(ctx)
+        scheduleAll(ctx)
     }
 
     fun onAlarm(ctx: Context, intent: Intent) {
-        val slot = intent.getIntExtra(EXTRA_SLOT, 0)
         val dateText = intent.getStringExtra(EXTRA_DATE) ?: return
         val date = runCatching { LocalDate.parse(dateText) }.getOrNull() ?: return
         val d = Store.data(ctx)
         val s = d.settings
-        val stillDue = s.remindersOn && slot < s.dosesPerDay &&
-            date == LocalDate.now() && !Logic.taken(d, date, slot)
+        val pills = Logic.planFor(s, date).pills
+        val stillDue = s.remindersOn && pills > 0 && date == LocalDate.now() && !Logic.taken(d, date)
 
         if (!stillDue) {
-            stopNag(ctx, slot)
-            if (intent.action == ACTION_DUE) scheduleSlot(ctx, slot)
+            stopNag(ctx)
+            if (intent.action == ACTION_DUE) scheduleAll(ctx)
             return
         }
 
-        showDose(ctx, s, slot, date)
+        showDose(ctx, s, date, pills)
         val nagAt = System.currentTimeMillis() + s.nagMinutes.coerceAtLeast(1) * 60_000L
-        setAlarm(ctx, nagAt, pending(ctx, ACTION_NAG, slot, dateText, reqNag(slot)))
-        if (intent.action == ACTION_DUE) scheduleSlot(ctx, slot)
+        setAlarm(ctx, nagAt, pending(ctx, ACTION_NAG, dateText, REQ_NAG))
+        if (intent.action == ACTION_DUE) scheduleAll(ctx)
     }
 
-    private fun showDose(ctx: Context, s: Settings, slot: Int, date: LocalDate) {
+    private fun showDose(ctx: Context, s: Settings, date: LocalDate, pills: Int) {
         val nmc = NotificationManagerCompat.from(ctx)
         if (!nmc.areNotificationsEnabled()) return
 
         val take = PendingIntent.getBroadcast(
-            ctx, reqTake(slot),
-            alarmIntent(ctx, ACTION_TAKE, slot, date.toString()),
+            ctx, REQ_TAKE, alarmIntent(ctx, ACTION_TAKE, date.toString()),
             PendingIntent.FLAG_UPDATE_CURRENT or IMMUTABLE,
         )
         val open = PendingIntent.getActivity(
-            ctx, reqOpen(slot),
+            ctx, REQ_OPEN,
             Intent(ctx, MainActivity::class.java)
                 .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP),
             PendingIntent.FLAG_UPDATE_CURRENT or IMMUTABLE,
         )
 
-        val due = Logic.fmtTime(Logic.slotMinutes(s, date, slot))
-        val which = if (s.dosesPerDay > 1) "Dose ${slot + 1} of ${s.dosesPerDay} was due at $due." else "Due at $due."
-        val text = "$which I'll remind you every ${s.nagMinutes} min until you tap Taken."
-
+        val due = Logic.fmtTime(Logic.doseMinutes(s, date))
+        val text = "Due at $due. I'll remind you every ${s.nagMinutes} min until you tap Taken."
         val n = NotificationCompat.Builder(ctx, CH_DOSE)
             .setSmallIcon(R.drawable.ic_pill)
-            .setContentTitle("Time to take your ${s.medName}")
+            .setContentTitle("Take ${Logic.pillWord(pills)} of ${s.medName}")
             .setContentText(text)
             .setStyle(NotificationCompat.BigTextStyle().bigText(text))
             .setPriority(NotificationCompat.PRIORITY_HIGH)
@@ -198,37 +188,38 @@ object Reminders {
             .setOngoing(true)
             .setAutoCancel(false)
             .setOnlyAlertOnce(false)
-            .setColor(0xFF00696E.toInt())
+            .setColor(BRAND)
             .setContentIntent(open)
             .addAction(R.drawable.ic_check, "Taken", take)
             .build()
         try {
-            nmc.notify(notifId(slot), n)
+            nmc.notify(DOSE_ID, n)
         } catch (_: SecurityException) {
         }
     }
 
     fun checkStock(ctx: Context) {
-        val s = Store.data(ctx).settings
+        val d = Store.data(ctx)
+        val s = d.settings
         if (s.pillsLeft < 0) return
-        val days = Logic.daysOfSupply(s)
+        val days = Logic.daysOfSupply(d)
         val today = LocalDate.now().toString()
         if (days > s.lowStockDays || s.stockWarnDate == today) return
         Store.update(ctx) { it.copy(settings = it.settings.copy(stockWarnDate = today)) }
 
         val nmc = NotificationManagerCompat.from(ctx)
         if (!nmc.areNotificationsEnabled()) return
-        val text = if (s.pillsLeft == 0) {
-            "You've run out. Time to get your repeat prescription."
+        val text = if (days == 0) {
+            "You don't have enough for your next dose. Time to get your repeat prescription."
         } else {
-            "${s.pillsLeft} left, about $days days. Time to order your repeat prescription."
+            "${Logic.pillWord(s.pillsLeft)} left, enough for about $days days. Time to order your repeat prescription."
         }
         val n = NotificationCompat.Builder(ctx, CH_STOCK)
             .setSmallIcon(R.drawable.ic_pill)
             .setContentTitle("Running low on ${s.medName}")
             .setContentText(text)
             .setStyle(NotificationCompat.BigTextStyle().bigText(text))
-            .setColor(0xFF00696E.toInt())
+            .setColor(BRAND)
             .setAutoCancel(true)
             .build()
         try {
@@ -246,7 +237,7 @@ object Reminders {
             .setContentTitle("Test reminder")
             .setContentText("This is how your dose reminders will look and sound.")
             .setPriority(NotificationCompat.PRIORITY_HIGH)
-            .setColor(0xFF00696E.toInt())
+            .setColor(BRAND)
             .setAutoCancel(true)
             .build()
         return try {
@@ -262,10 +253,9 @@ class AlarmReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
         when (intent.action) {
             Reminders.ACTION_TAKE -> {
-                val slot = intent.getIntExtra(Reminders.EXTRA_SLOT, 0)
                 val date = intent.getStringExtra(Reminders.EXTRA_DATE)
                     ?.let { runCatching { LocalDate.parse(it) }.getOrNull() } ?: LocalDate.now()
-                Logic.markTaken(context, date, slot)
+                Logic.markTaken(context, date)
             }
             Reminders.ACTION_DUE, Reminders.ACTION_NAG -> Reminders.onAlarm(context, intent)
         }

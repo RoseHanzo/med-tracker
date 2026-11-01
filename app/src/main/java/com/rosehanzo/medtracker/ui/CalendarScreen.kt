@@ -20,6 +20,8 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.KeyboardArrowLeft
 import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
+import androidx.compose.material.icons.filled.Event
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -38,6 +40,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import com.rosehanzo.medtracker.data.AppData
 import com.rosehanzo.medtracker.data.DayStatus
 import com.rosehanzo.medtracker.data.Logic
@@ -58,7 +61,7 @@ fun CalendarScreen(data: AppData) {
             .padding(horizontal = 16.dp, vertical = 12.dp),
         verticalArrangement = Arrangement.spacedBy(16.dp),
     ) {
-        Text("Calendar", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.SemiBold)
+        ScreenTitle("Calendar", "Your doses, check-ins and readings by day")
 
         SectionCard {
             Row(verticalAlignment = Alignment.CenterVertically) {
@@ -68,6 +71,7 @@ fun CalendarScreen(data: AppData) {
                 Text(
                     month.format(DateTimeFormatter.ofPattern("MMMM yyyy", Locale.UK)),
                     style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.SemiBold,
                     textAlign = TextAlign.Center,
                     modifier = Modifier.weight(1f),
                 )
@@ -76,6 +80,7 @@ fun CalendarScreen(data: AppData) {
                 }
             }
             MonthGrid(data, month, selected) { selected = it }
+            HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f))
             Legend()
         }
 
@@ -86,25 +91,23 @@ fun CalendarScreen(data: AppData) {
 @Composable
 private fun MonthGrid(data: AppData, month: YearMonth, selected: LocalDate, onPick: (LocalDate) -> Unit) {
     val today = LocalDate.now()
-    val first = month.atDay(1)
-    val offset = first.dayOfWeek.value - 1 // Monday first
-    val cells = offset + month.lengthOfMonth()
-    val rows = (cells + 6) / 7
+    val offset = month.atDay(1).dayOfWeek.value - 1 // Monday first
+    val rows = (offset + month.lengthOfMonth() + 6) / 7
 
-    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-        Row(Modifier.fillMaxWidth()) {
-            listOf("M", "T", "W", "T", "F", "S", "S").forEach {
+    Column(verticalArrangement = Arrangement.spacedBy(5.dp)) {
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(5.dp)) {
+            WEEKDAY_LETTERS.forEach {
                 Text(
                     it,
                     modifier = Modifier.weight(1f),
                     textAlign = TextAlign.Center,
                     style = MaterialTheme.typography.labelMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    color = mutedText(),
                 )
             }
         }
         for (r in 0 until rows) {
-            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(5.dp)) {
                 for (c in 0 until 7) {
                     val dayNum = r * 7 + c - offset + 1
                     if (dayNum < 1 || dayNum > month.lengthOfMonth()) {
@@ -114,6 +117,8 @@ private fun MonthGrid(data: AppData, month: YearMonth, selected: LocalDate, onPi
                         DayCell(
                             date = date,
                             status = Logic.dayStatus(data, date),
+                            plannedPills = Logic.planFor(data.settings, date).pills,
+                            takenPills = data.doses[date.toString()]?.pills,
                             hasCheckin = data.checkins.containsKey(date.toString()),
                             isSelected = date == selected,
                             isToday = date == today,
@@ -131,6 +136,8 @@ private fun MonthGrid(data: AppData, month: YearMonth, selected: LocalDate, onPi
 private fun DayCell(
     date: LocalDate,
     status: DayStatus,
+    plannedPills: Int,
+    takenPills: Int?,
     hasCheckin: Boolean,
     isSelected: Boolean,
     isToday: Boolean,
@@ -138,30 +145,42 @@ private fun DayCell(
     onClick: () -> Unit,
 ) {
     val fill = statusColor(status)
-    val shape = RoundedCornerShape(10.dp)
-    var m = modifier
-        .aspectRatio(1f)
-        .clip(shape)
-        .background(fill ?: MaterialTheme.colorScheme.surfaceContainerHigh.copy(alpha = 0.6f))
+    val shape = RoundedCornerShape(12.dp)
+    val base = fill ?: MaterialTheme.colorScheme.surfaceContainer
+    var m = modifier.aspectRatio(1f).clip(shape).background(base)
     if (isSelected) m = m.border(2.dp, MaterialTheme.colorScheme.primary, shape)
-    else if (isToday) m = m.border(1.dp, MaterialTheme.colorScheme.outline, shape)
+    else if (isToday) m = m.border(1.5.dp, MaterialTheme.colorScheme.outline, shape)
     m = m.clickable(onClick = onClick)
 
+    val textColor = if (fill != null) onFill(fill) else MaterialTheme.colorScheme.onSurface
+    val pills = takenPills ?: plannedPills
+    val showPills = status != DayStatus.NONE || date.isAfter(LocalDate.now())
+
     Box(m, contentAlignment = Alignment.Center) {
-        Text(
-            "${date.dayOfMonth}",
-            style = MaterialTheme.typography.labelLarge,
-            fontWeight = if (isToday) FontWeight.Bold else FontWeight.Normal,
-            color = if (fill != null) onFill(fill) else MaterialTheme.colorScheme.onSurface,
-        )
+        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+            Text(
+                "${date.dayOfMonth}",
+                style = MaterialTheme.typography.labelLarge,
+                fontWeight = if (isToday) FontWeight.Bold else FontWeight.Medium,
+                color = textColor,
+            )
+            if (showPills) {
+                Text(
+                    if (pills > 0) "●".repeat(pills.coerceAtMost(4)) else "–",
+                    fontSize = 6.sp,
+                    lineHeight = 7.sp,
+                    color = if (fill != null) textColor.copy(alpha = 0.85f) else MaterialTheme.colorScheme.primary.copy(alpha = 0.7f),
+                )
+            }
+        }
         if (hasCheckin) {
             Box(
                 Modifier
-                    .align(Alignment.BottomCenter)
-                    .padding(bottom = 4.dp)
+                    .align(Alignment.TopEnd)
+                    .padding(4.dp)
                     .size(5.dp)
                     .clip(CircleShape)
-                    .background(if (fill != null) onFill(fill) else MaterialTheme.colorScheme.primary),
+                    .background(if (fill != null) textColor else MaterialTheme.colorScheme.tertiary),
             )
         }
     }
@@ -169,11 +188,17 @@ private fun DayCell(
 
 @Composable
 private fun Legend() {
-    Row(horizontalArrangement = Arrangement.spacedBy(12.dp), verticalAlignment = Alignment.CenterVertically) {
-        LegendItem(GoodFill, "Taken")
-        LegendItem(WarnFill, "Partly")
-        LegendItem(BadFill, "Missed")
-        LegendItem(MaterialTheme.colorScheme.primary, "Check-in", dot = true)
+    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+        Row(horizontalArrangement = Arrangement.spacedBy(14.dp), verticalAlignment = Alignment.CenterVertically) {
+            LegendItem(GoodFill, "Taken")
+            LegendItem(BadFill, "Missed")
+            LegendItem(MaterialTheme.colorScheme.tertiary, "Check-in", dot = true)
+        }
+        Text(
+            "Dots under each date show how many pills are planned. – means a day off.",
+            style = MaterialTheme.typography.labelSmall,
+            color = mutedText(),
+        )
     }
 }
 
@@ -182,12 +207,12 @@ private fun LegendItem(color: Color, label: String, dot: Boolean = false) {
     Row(verticalAlignment = Alignment.CenterVertically) {
         Box(
             Modifier
-                .size(if (dot) 6.dp else 10.dp)
-                .clip(if (dot) CircleShape else RoundedCornerShape(3.dp))
+                .size(if (dot) 7.dp else 12.dp)
+                .clip(if (dot) CircleShape else RoundedCornerShape(4.dp))
                 .background(color),
         )
-        Spacer(Modifier.size(4.dp))
-        Text(label, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        Spacer(Modifier.size(6.dp))
+        Text(label, style = MaterialTheme.typography.labelMedium, color = mutedText())
     }
 }
 
@@ -196,64 +221,60 @@ private fun DayDetails(data: AppData, date: LocalDate) {
     val ctx = LocalContext.current
     val s = data.settings
     val today = LocalDate.now()
-    val taken = data.doses[date.toString()].orEmpty()
+    val plan = Logic.planFor(s, date)
+    val dose = data.doses[date.toString()]
     val checkin = data.checkins[date.toString()].orEmpty()
     val metrics = data.metrics.filter { dateOf(it.time) == date }
-    val muted = MaterialTheme.colorScheme.onSurfaceVariant
 
-    SectionCard(longDate(date)) {
-        Text("Medication", style = MaterialTheme.typography.labelLarge)
-        if (date.isAfter(today)) {
-            Text("Nothing logged yet", style = MaterialTheme.typography.bodyMedium, color = muted)
-        } else {
-            for (slot in 0 until s.dosesPerDay) {
-                val t = taken.firstOrNull { it.slot == slot }
-                val name = if (s.dosesPerDay == 1) "Dose" else "Dose ${slot + 1}"
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    val missed = t == null && date.isBefore(today) && !date.isBefore(Logic.startDate(s))
-                    Text(
-                        when {
-                            t != null -> "$name: taken at ${timeOf(t.time)}" +
-                                if (dateOf(t.time) != date) " (logged ${shortDate(dateOf(t.time))})" else ""
-                            missed -> "$name: missed"
-                            else -> "$name: not taken"
-                        },
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = when {
-                            t != null -> goodText()
-                            missed -> badText()
-                            else -> muted
-                        },
-                        modifier = Modifier.weight(1f),
-                    )
-                    if (t == null) {
-                        TextButton(onClick = { Logic.markTaken(ctx, date, slot) }) { Text("Mark taken") }
-                    } else {
-                        TextButton(onClick = { Logic.unmarkTaken(ctx, date, slot) }) { Text("Undo") }
-                    }
+    SectionCard(longDate(date), Icons.Filled.Event) {
+        // Medication
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Column(Modifier.weight(1f)) {
+                Text("Medication", style = MaterialTheme.typography.labelLarge, color = mutedText())
+                val status = Logic.dayStatus(data, date)
+                Text(
+                    when {
+                        dose != null -> "${Logic.pillWord(dose.pills)} taken at ${timeOf(dose.time)}" +
+                            if (dateOf(dose.time) != date) " (logged ${shortDate(dateOf(dose.time))})" else ""
+                        plan.pills == 0 && plan.phase != null -> "Day off"
+                        plan.pills == 0 -> "Nothing planned"
+                        date.isAfter(today) -> "${Logic.pillWord(plan.pills)} planned at ${Logic.fmtTime(Logic.doseMinutes(s, date))}"
+                        status == DayStatus.MISSED -> "${Logic.pillWord(plan.pills)} missed"
+                        else -> "${Logic.pillWord(plan.pills)} due at ${Logic.fmtTime(Logic.doseMinutes(s, date))}"
+                    },
+                    style = MaterialTheme.typography.bodyLarge,
+                    color = when {
+                        dose != null -> goodText()
+                        status == DayStatus.MISSED -> badText()
+                        else -> MaterialTheme.colorScheme.onSurface
+                    },
+                )
+            }
+            if (!date.isAfter(today)) {
+                if (dose != null) {
+                    TextButton(onClick = { Logic.unmarkTaken(ctx, date) }) { Text("Undo") }
+                } else if (plan.pills > 0) {
+                    TextButton(onClick = { Logic.markTaken(ctx, date) }) { Text("Mark taken") }
                 }
             }
         }
 
         if (checkin.isNotEmpty()) {
-            Text("Check-in", style = MaterialTheme.typography.labelLarge)
+            HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f))
+            Text("Check-in", style = MaterialTheme.typography.labelLarge, color = mutedText())
             s.symptoms.filter { it.id in checkin }.forEach { def ->
                 val v = checkin.getValue(def.id)
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Text(def.name, style = MaterialTheme.typography.bodyMedium, modifier = Modifier.weight(1f))
-                    val fill = ratingColor(v, def.highIsGood)
-                    Box(
-                        Modifier.size(28.dp).clip(CircleShape).background(fill),
-                        contentAlignment = Alignment.Center,
-                    ) {
-                        Text("$v", style = MaterialTheme.typography.labelMedium, color = onFill(fill))
-                    }
+                    val c = ratingColor(v, def.highIsGood)
+                    Pill("$v/10", c.copy(alpha = 0.16f), c)
                 }
             }
         }
 
         if (metrics.isNotEmpty()) {
-            Text("Measurements", style = MaterialTheme.typography.labelLarge)
+            HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f))
+            Text("Measurements", style = MaterialTheme.typography.labelLarge, color = mutedText())
             metrics.forEach { m ->
                 val text = when (m.type) {
                     "weight" -> "Weight ${fmt1(m.v1)} kg"
@@ -261,20 +282,19 @@ private fun DayDetails(data: AppData, date: LocalDate) {
                     else -> (if (m.source == "hc") "Average heart rate " else "Pulse ") + "${fmt1(m.v1)} bpm"
                 }
                 Row(verticalAlignment = Alignment.CenterVertically) {
-                    Text(
-                        "$text · ${timeOf(m.time)}" + if (m.source == "hc") " · watch" else "",
-                        style = MaterialTheme.typography.bodyMedium,
-                        modifier = Modifier.weight(1f),
-                    )
+                    Column(Modifier.weight(1f)) {
+                        Text(text, style = MaterialTheme.typography.bodyMedium)
+                        Text(
+                            timeOf(m.time) + if (m.source == "hc") " · from Samsung Health" else "",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = mutedText(),
+                        )
+                    }
                     if (m.source != "hc") {
                         TextButton(onClick = { Logic.deleteMetric(ctx, m.id) }) { Text("Delete") }
                     }
                 }
             }
-        }
-
-        if (checkin.isEmpty() && metrics.isEmpty() && !date.isAfter(today)) {
-            Text("No check-in or measurements this day", style = MaterialTheme.typography.bodySmall, color = muted)
         }
     }
 }

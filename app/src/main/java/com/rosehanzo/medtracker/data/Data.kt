@@ -34,14 +34,28 @@ val DEFAULT_SYMPTOMS = listOf(
     SymptomDef("dizziness", "Dizziness", "None", "Severe"),
 )
 
+/**
+ * A stretch of the dose plan. Runs from [start] until the next phase starts.
+ * [end] is optional and only shown for reference: after it, the same amount
+ * carries on until a later phase begins.
+ */
+data class Phase(
+    val id: String,
+    val start: String,
+    val end: String? = null,
+    val pills: Int = 1,
+    /** java.time.DayOfWeek values (1 = Monday … 7 = Sunday) with no pills. */
+    val daysOff: Set<Int> = emptySet(),
+)
+
 data class Settings(
     val medName: String = "Xaggitin XL 18 mg",
-    val dosesPerDay: Int = 1,
-    /** Minutes after midnight for dose 1, 2, 3. */
-    val weekdayTimes: List<Int> = listOf(8 * 60, 13 * 60, 18 * 60),
-    val weekendTimes: List<Int> = listOf(9 * 60 + 30, 14 * 60, 19 * 60),
+    /** Minutes after midnight. */
+    val weekdayTime: Int = 8 * 60,
+    val weekendTime: Int = 9 * 60 + 30,
     /** java.time.DayOfWeek values: 1 = Monday … 7 = Sunday. */
     val weekendDays: Set<Int> = setOf(6, 7),
+    val phases: List<Phase> = emptyList(),
     val remindersOn: Boolean = true,
     val nagMinutes: Int = 10,
     /** -1 means "not set". */
@@ -54,7 +68,8 @@ data class Settings(
     val stockWarnDate: String = "",
 )
 
-data class DoseTaken(val slot: Int, val time: Long)
+/** The day's dose: taken once, [pills] at a time. */
+data class DoseTaken(val time: Long, val pills: Int)
 
 /** type is "weight" (kg), "bp" (v1 systolic, v2 diastolic) or "pulse" (bpm). */
 data class Metric(
@@ -67,13 +82,18 @@ data class Metric(
 )
 
 data class AppData(
-    val settings: Settings = Settings(),
-    /** Date (yyyy-MM-dd) -> doses taken that day. */
-    val doses: Map<String, List<DoseTaken>> = emptyMap(),
+    val settings: Settings = defaultSettings(),
+    /** Date (yyyy-MM-dd) -> the dose taken that day. */
+    val doses: Map<String, DoseTaken> = emptyMap(),
     /** Date -> symptom id -> rating 1..10. */
     val checkins: Map<String, Map<String, Int>> = emptyMap(),
     val metrics: List<Metric> = emptyList(),
 )
+
+fun defaultSettings(): Settings {
+    val s = Settings()
+    return s.copy(phases = listOf(Phase("p0", s.startDate, null, 1)))
+}
 
 object Store {
     private val _state = MutableStateFlow(AppData())
@@ -128,10 +148,20 @@ object Codec {
         val s = d.settings
         val so = JSONObject()
         so.put("medName", s.medName)
-        so.put("dosesPerDay", s.dosesPerDay)
-        so.put("weekdayTimes", JSONArray(s.weekdayTimes))
-        so.put("weekendTimes", JSONArray(s.weekendTimes))
+        so.put("weekdayTime", s.weekdayTime)
+        so.put("weekendTime", s.weekendTime)
         so.put("weekendDays", JSONArray(s.weekendDays.toList()))
+        val phases = JSONArray()
+        s.phases.forEach {
+            val x = JSONObject()
+            x.put("id", it.id)
+            x.put("start", it.start)
+            if (it.end != null) x.put("end", it.end)
+            x.put("pills", it.pills)
+            x.put("daysOff", JSONArray(it.daysOff.toList()))
+            phases.put(x)
+        }
+        so.put("phases", phases)
         so.put("remindersOn", s.remindersOn)
         so.put("nagMinutes", s.nagMinutes)
         so.put("pillsLeft", s.pillsLeft)
@@ -155,10 +185,8 @@ object Codec {
         so.put("symptoms", syms)
 
         val doses = JSONObject()
-        d.doses.forEach { (date, list) ->
-            val a = JSONArray()
-            list.forEach { a.put(JSONObject().put("slot", it.slot).put("time", it.time)) }
-            doses.put(date, a)
+        d.doses.forEach { (date, dose) ->
+            doses.put(date, JSONObject().put("time", dose.time).put("pills", dose.pills))
         }
 
         val checkins = JSONObject()
@@ -181,7 +209,7 @@ object Codec {
         }
 
         val root = JSONObject()
-        root.put("version", 1)
+        root.put("version", 2)
         root.put("settings", so)
         root.put("doses", doses)
         root.put("checkins", checkins)
@@ -189,12 +217,7 @@ object Codec {
         return root.toString()
     }
 
-    private fun ints(a: JSONArray?, fallback: List<Int>): List<Int> {
-        if (a == null) return fallback
-        val list = List(a.length()) { a.getInt(it) }
-        // Always keep three dose slots.
-        return if (fallback.size == 3 && list.size < 3) list + fallback.drop(list.size) else list
-    }
+    private fun ints(a: JSONArray?): List<Int>? = a?.let { List(it.length()) { i -> it.getInt(i) } }
 
     fun decode(text: String): AppData {
         val o = JSONObject(text)
@@ -217,12 +240,33 @@ object Codec {
         } ?: DEFAULT_SYMPTOMS
         val ids = stored.map { it.id }.toSet()
 
+        val startDate = so.optString("startDate", def.startDate)
+
+        // Version 1 stored three reminder times per day; keep the first.
+        val weekdayTime = if (so.has("weekdayTime")) so.getInt("weekdayTime")
+        else ints(so.optJSONArray("weekdayTimes"))?.firstOrNull() ?: def.weekdayTime
+        val weekendTime = if (so.has("weekendTime")) so.getInt("weekendTime")
+        else ints(so.optJSONArray("weekendTimes"))?.firstOrNull() ?: def.weekendTime
+
+        val phases = so.optJSONArray("phases")?.let { a ->
+            List(a.length()) { i ->
+                val x = a.getJSONObject(i)
+                Phase(
+                    id = x.optString("id", "p$i"),
+                    start = x.getString("start"),
+                    end = if (x.has("end") && !x.isNull("end")) x.getString("end") else null,
+                    pills = x.optInt("pills", 1),
+                    daysOff = ints(x.optJSONArray("daysOff"))?.toSet() ?: emptySet(),
+                )
+            }
+        } ?: listOf(Phase("p0", startDate, null, 1))
+
         val settings = Settings(
             medName = so.optString("medName", def.medName),
-            dosesPerDay = so.optInt("dosesPerDay", def.dosesPerDay).coerceIn(1, 3),
-            weekdayTimes = ints(so.optJSONArray("weekdayTimes"), def.weekdayTimes),
-            weekendTimes = ints(so.optJSONArray("weekendTimes"), def.weekendTimes),
-            weekendDays = ints(so.optJSONArray("weekendDays"), def.weekendDays.toList()).toSet(),
+            weekdayTime = weekdayTime,
+            weekendTime = weekendTime,
+            weekendDays = ints(so.optJSONArray("weekendDays"))?.toSet() ?: def.weekendDays,
+            phases = phases,
             remindersOn = so.optBoolean("remindersOn", def.remindersOn),
             nagMinutes = so.optInt("nagMinutes", def.nagMinutes),
             pillsLeft = so.optInt("pillsLeft", def.pillsLeft),
@@ -230,17 +274,19 @@ object Codec {
             symptoms = stored + DEFAULT_SYMPTOMS.filter { it.id !in ids },
             hcAutoSync = so.optBoolean("hcAutoSync", def.hcAutoSync),
             hcLastSync = so.optLong("hcLastSync", 0L),
-            startDate = so.optString("startDate", def.startDate),
+            startDate = startDate,
             stockWarnDate = so.optString("stockWarnDate", ""),
         )
 
-        val doses = mutableMapOf<String, List<DoseTaken>>()
+        val doses = mutableMapOf<String, DoseTaken>()
         o.optJSONObject("doses")?.let { dob ->
             dob.keys().forEach { k ->
-                val a = dob.getJSONArray(k)
-                doses[k] = List(a.length()) { i ->
-                    val x = a.getJSONObject(i)
-                    DoseTaken(x.getInt("slot"), x.getLong("time"))
+                when (val v = dob.get(k)) {
+                    is JSONObject -> doses[k] = DoseTaken(v.getLong("time"), v.optInt("pills", 1))
+                    // Version 1: a list of separate doses. Keep the first as the day's dose.
+                    is JSONArray -> if (v.length() > 0) {
+                        doses[k] = DoseTaken(v.getJSONObject(0).getLong("time"), v.length())
+                    }
                 }
             }
         }
