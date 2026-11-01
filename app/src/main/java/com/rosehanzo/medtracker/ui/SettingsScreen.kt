@@ -406,15 +406,9 @@ private fun ReminderSection(s: Settings) {
             Switch(checked = s.remindersOn, onCheckedChange = { on -> Logic.updateSettings(ctx) { it.copy(remindersOn = on) } })
         }
 
-        Text("Remind me again every", style = MaterialTheme.typography.labelLarge)
-        Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-            listOf(5, 10, 15, 30).forEach { n ->
-                FilterChip(
-                    selected = s.nagMinutes == n,
-                    onClick = { Logic.updateSettings(ctx) { it.copy(nagMinutes = n) } },
-                    label = { Text("$n min") },
-                )
-            }
+        Text("Remind me again every … minutes", style = MaterialTheme.typography.labelLarge)
+        NumberChoiceRow(listOf(5, 10, 15, 30), s.nagMinutes) { n ->
+            Logic.updateSettings(ctx) { it.copy(nagMinutes = n) }
         }
 
         if (!notificationsOn) {
@@ -499,14 +493,8 @@ private fun SupplySection(data: AppData) {
             Button(onClick = { dialog = "add" }, modifier = Modifier.weight(1f)) { Text("Add a refill") }
         }
         Text("Warn me when I have this many days left", style = MaterialTheme.typography.labelLarge)
-        Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-            listOf(3, 5, 7, 14).forEach { n ->
-                FilterChip(
-                    selected = s.lowStockDays == n,
-                    onClick = { Logic.updateSettings(ctx, reschedule = false) { it.copy(lowStockDays = n, stockWarnDate = "") } },
-                    label = { Text("$n") },
-                )
-            }
+        NumberChoiceRow(listOf(3, 5, 7, 10, 14, 21, 30), s.lowStockDays) { n ->
+            Logic.updateSettings(ctx, reschedule = false) { it.copy(lowStockDays = n, stockWarnDate = "") }
         }
     }
 

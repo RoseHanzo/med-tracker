@@ -47,7 +47,7 @@ object Logic {
         if (taken(d, date)) return DayStatus.TAKEN
         val plan = planFor(d.settings, date)
         if (plan.pills == 0) return if (plan.phase == null) DayStatus.NONE else DayStatus.OFF
-        if (date.isBefore(startDate(d.settings))) return DayStatus.NONE
+        // Planned days count as missed even before Cadence was installed; mark them taken in the calendar.
         if (date == today) return DayStatus.PENDING
         return DayStatus.MISSED
     }

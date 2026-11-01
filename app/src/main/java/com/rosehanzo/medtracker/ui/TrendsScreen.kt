@@ -151,10 +151,9 @@ fun TrendsScreen(data: AppData) {
 @Composable
 private fun MedicationCard(data: AppData, start: LocalDate, today: LocalDate, xMin: Double, xMax: Double) {
     val s = data.settings
-    val first = maxOf(start, Logic.startDate(s))
     var expected = 0
     var taken = 0
-    var d = first
+    var d = start
     while (!d.isAfter(today)) {
         if (Logic.planFor(s, d).pills > 0) {
             expected++

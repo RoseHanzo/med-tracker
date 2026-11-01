@@ -13,6 +13,7 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -224,6 +225,34 @@ fun dayX(millis: Long): Double {
 
 fun fmt1(v: Double): String =
     if (abs(v - v.roundToInt()) < 0.05) v.roundToInt().toString() else String.format(Locale.UK, "%.1f", v)
+
+/** Row of equal-width number tiles; the unit goes in the heading above so every label fits. */
+@Composable
+fun NumberChoiceRow(options: List<Int>, selected: Int, onSelect: (Int) -> Unit) {
+    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+        options.forEach { n ->
+            val on = n == selected
+            Box(
+                Modifier
+                    .weight(1f)
+                    .height(44.dp)
+                    .clip(RoundedCornerShape(12.dp))
+                    .background(if (on) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.surfaceContainerHigh)
+                    .clickable { onSelect(n) },
+                contentAlignment = Alignment.Center,
+            ) {
+                Text(
+                    "$n",
+                    style = MaterialTheme.typography.titleSmall,
+                    fontWeight = if (on) FontWeight.Bold else FontWeight.Medium,
+                    color = if (on) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurface,
+                    maxLines = 1,
+                    softWrap = false,
+                )
+            }
+        }
+    }
+}
 
 val WEEKDAY_LETTERS = listOf("M", "T", "W", "T", "F", "S", "S")
 val WEEKDAY_SHORT = listOf("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun")
