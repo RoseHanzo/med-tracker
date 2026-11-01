@@ -1,0 +1,70 @@
+name: Build app
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: build
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "8.14.3"
+
+      - name: Build the app
+        env:
+          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+        run: |
+          if [ -z "$KEYSTORE_PASSWORD" ]; then
+            echo "The KEYSTORE_PASSWORD secret is missing, so the app can't be signed." | tee build.log
+            echo "Checking that the code compiles instead." | tee -a build.log
+            set -o pipefail
+            gradle compileReleaseKotlin --no-daemon --stacktrace 2>&1 | tee -a build.log
+            exit 1
+          fi
+          set -o pipefail
+          gradle assembleRelease --no-daemon --stacktrace 2>&1 | tee build.log
+
+      - name: Publish the app for download
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          cp app/build/outputs/apk/release/app-release.apk MedTracker.apk
+          if ! gh release view latest >/dev/null 2>&1; then
+            gh release create latest --title "Med Tracker (latest)" \
+              --notes "Download MedTracker.apk below on your phone and open it to install or update."
+          fi
+          gh release upload latest MedTracker.apk --clobber
+          gh release edit latest --notes "Build ${{ github.run_number }} from $(date -u +'%d %b %Y %H:%M') UTC. Download MedTracker.apk below on your phone and open it to install or update."
+
+      - name: Save build log
+        if: always()
+        run: |
+          mkdir -p /tmp/ci-log
+          if [ -f build.log ]; then
+            grep -E "^e: |error:|FAILURE|What went wrong|Could not|BUILD (SUCCESSFUL|FAILED)" build.log | head -200 > /tmp/ci-log/errors.txt || true
+            tail -c 150000 build.log > /tmp/ci-log/build.log
+          fi
+          echo "${{ job.status }} run=${{ github.run_number }} sha=${{ github.sha }}" > /tmp/ci-log/status.txt
+          cd /tmp/ci-log
+          git init -q
+          git checkout -q -b ci-log
+          git add .
+          git -c user.name=ci -c user.email=ci@users.noreply.github.com commit -qm "Build log for run ${{ github.run_number }}"
+          git push -f -q "https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}" ci-log
