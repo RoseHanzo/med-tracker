@@ -38,6 +38,20 @@ jobs:
             gradle compileReleaseKotlin --no-daemon --stacktrace 2>&1 | tee -a build.log
             exit 1
           fi
+          # First run only: create the signing key, locked with your secret password,
+          # and save it to the repo so every future version is signed the same way.
+          if [ ! -f keystore/medtracker.jks ]; then
+            mkdir -p keystore
+            keytool -genkeypair -keystore keystore/medtracker.jks -storetype PKCS12 \
+              -alias medtracker -keyalg RSA -keysize 2048 -validity 36500 \
+              -storepass "$KEYSTORE_PASSWORD" -keypass "$KEYSTORE_PASSWORD" \
+              -dname "CN=Med Tracker, O=Personal"
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git add keystore/medtracker.jks
+            git commit -m "Add signing key (locked with the KEYSTORE_PASSWORD secret)"
+            git push
+          fi
           set -o pipefail
           gradle assembleRelease --no-daemon --stacktrace 2>&1 | tee build.log
 
