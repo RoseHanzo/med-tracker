@@ -43,15 +43,23 @@ object Logic {
     fun startDate(s: Settings): LocalDate =
         runCatching { LocalDate.parse(s.startDate) }.getOrDefault(LocalDate.now())
 
+    fun missed(d: AppData, date: LocalDate): Boolean = date.toString() in d.missed
+
+    /** Taken or marked missed: nothing more to remind about. */
+    fun resolved(d: AppData, date: LocalDate): Boolean = taken(d, date) || missed(d, date)
+
+    /**
+     * TAKEN and MISSED come only from what you mark. A planned day you haven't marked
+     * stays PENDING (orange), even after it has passed.
+     */
     fun dayStatus(d: AppData, date: LocalDate): DayStatus {
         val today = LocalDate.now()
         if (date.isAfter(today)) return DayStatus.NONE
         if (taken(d, date)) return DayStatus.TAKEN
+        if (missed(d, date)) return DayStatus.MISSED
         val plan = planFor(d.settings, date)
         if (plan.pills == 0) return if (plan.phase == null) DayStatus.NONE else DayStatus.OFF
-        // Planned days count as missed even before Cadence was installed; mark them taken in the calendar.
-        if (date == today) return DayStatus.PENDING
-        return DayStatus.MISSED
+        return DayStatus.PENDING
     }
 
     /** How many days the pills you have will last, following the plan. -1 if the count isn't set. */
@@ -72,6 +80,15 @@ object Logic {
         return days
     }
 
+    /** Now for today; for an earlier day, that day's planned time (you can change it after). */
+    private fun takenTime(s: Settings, date: LocalDate): Long =
+        if (date == LocalDate.now()) {
+            System.currentTimeMillis()
+        } else {
+            date.atStartOfDay(java.time.ZoneId.systemDefault())
+                .plusMinutes(doseMinutes(s, date).toLong()).toInstant().toEpochMilli()
+        }
+
     fun markTaken(ctx: Context, date: LocalDate) {
         var changed = false
         Store.update(ctx) { d ->
@@ -83,7 +100,8 @@ object Logic {
                 val s = d.settings
                 val newSettings = if (s.pillsLeft >= 0) s.copy(pillsLeft = (s.pillsLeft - pills).coerceAtLeast(0)) else s
                 d.copy(
-                    doses = d.doses + (date.toString() to DoseTaken(System.currentTimeMillis(), pills)),
+                    doses = d.doses + (date.toString() to DoseTaken(takenTime(d.settings, date), pills)),
+                    missed = d.missed - date.toString(),
                     settings = newSettings,
                 )
             }
@@ -104,6 +122,34 @@ object Logic {
             }
         }
         Reminders.scheduleAll(ctx)
+    }
+
+    /** Marks [date] as missed. If it was marked taken, that's undone and the pills go back. */
+    fun markMissed(ctx: Context, date: LocalDate) {
+        val key = date.toString()
+        Store.update(ctx) { d ->
+            val dose = d.doses[key]
+            val s = d.settings
+            val newSettings = if (dose != null && s.pillsLeft >= 0) s.copy(pillsLeft = s.pillsLeft + dose.pills) else s
+            d.copy(doses = d.doses - key, missed = d.missed + key, settings = newSettings)
+        }
+        Reminders.scheduleAll(ctx)
+    }
+
+    fun unmarkMissed(ctx: Context, date: LocalDate) {
+        Store.update(ctx) { d -> d.copy(missed = d.missed - date.toString()) }
+        Reminders.scheduleAll(ctx)
+    }
+
+    /** Changes when the dose on [date] was taken to [minutes] after midnight that day. */
+    fun setDoseTime(ctx: Context, date: LocalDate, minutes: Int) {
+        val key = date.toString()
+        val time = date.atStartOfDay(java.time.ZoneId.systemDefault())
+            .plusMinutes(minutes.toLong()).toInstant().toEpochMilli()
+        Store.update(ctx) { d ->
+            val dose = d.doses[key] ?: return@update d
+            d.copy(doses = d.doses + (key to dose.copy(time = time)))
+        }
     }
 
     fun saveCheckin(ctx: Context, date: LocalDate, values: Map<String, Int>) {

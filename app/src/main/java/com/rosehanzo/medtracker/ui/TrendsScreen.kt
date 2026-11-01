@@ -21,6 +21,7 @@ import androidx.compose.material.icons.filled.Medication
 import androidx.compose.material.icons.filled.MonitorHeart
 import androidx.compose.material.icons.filled.MonitorWeight
 import androidx.compose.material.icons.filled.Mood
+import androidx.compose.material.icons.filled.Schedule
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.SegmentedButton
@@ -39,6 +40,8 @@ import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.PathEffect
+import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.drawText
@@ -85,6 +88,7 @@ fun TrendsScreen(data: AppData) {
         }
 
         MedicationCard(data, start, today, xMin, xMax)
+        DoseTimeCard(data, start, today, xMin, xMax)
 
         val primary = MaterialTheme.colorScheme.primary
         val weight = data.metrics.filter { it.type == "weight" && inRange(it.time) }
@@ -171,7 +175,7 @@ private fun MedicationCard(data: AppData, start: LocalDate, today: LocalDate, xM
         .toList()
     val maxPills = (bars.maxOfOrNull { it.pills } ?: 1).coerceAtLeast(1)
 
-    val pending = MaterialTheme.colorScheme.primary.copy(alpha = 0.35f)
+    val pending = TodayFill.copy(alpha = 0.6f)
     val grid = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.7f)
     val measurer = rememberTextMeasurer()
     val labelStyle = TextStyle(fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
@@ -232,8 +236,116 @@ private fun MedicationCard(data: AppData, start: LocalDate, today: LocalDate, xM
         Row(horizontalArrangement = Arrangement.spacedBy(14.dp)) {
             LegendDot(GoodFill, "Taken")
             LegendDot(BadFill.copy(alpha = 0.55f), "Missed")
-            LegendDot(pending, "Due today")
+            LegendDot(pending, "To mark")
         }
+    }
+}
+
+private data class DosePoint(val x: Double, val minutes: Int, val pills: Int, val missed: Boolean)
+
+private fun fmtClock(minutes: Int): String = "%02d:%02d".format((minutes / 60).coerceIn(0, 23), minutes % 60)
+
+/** When you took each dose. Filled dots show the pills; red rings mark missed days at their planned time. */
+@Composable
+private fun DoseTimeCard(data: AppData, start: LocalDate, today: LocalDate, xMin: Double, xMax: Double) {
+    val s = data.settings
+    val zone = java.time.ZoneId.systemDefault()
+    val points = mutableListOf<DosePoint>()
+    val planned = mutableListOf<Pair<Double, Int>>()
+    var d = start
+    while (!d.isAfter(today)) {
+        val plan = Logic.planFor(s, d)
+        val x = d.toEpochDay() + 0.5
+        if (plan.pills > 0) planned += x to Logic.doseMinutes(s, d)
+        val dose = data.doses[d.toString()]
+        if (dose != null) {
+            val t = java.time.Instant.ofEpochMilli(dose.time).atZone(zone).toLocalTime()
+            points += DosePoint(x, t.hour * 60 + t.minute, dose.pills, false)
+        } else if (Logic.missed(data, d) && plan.pills > 0) {
+            points += DosePoint(x, Logic.doseMinutes(s, d), plan.pills, true)
+        }
+        d = d.plusDays(1)
+    }
+
+    val measurer = rememberTextMeasurer()
+    val muted = MaterialTheme.colorScheme.onSurfaceVariant
+    val grid = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.7f)
+    val plannedColor = MaterialTheme.colorScheme.outline
+    val labelStyle = TextStyle(fontSize = 11.sp, color = muted)
+
+    SectionCard("Dose times", Icons.Filled.Schedule) {
+        if (points.isEmpty()) {
+            Text("Nothing logged in this period", style = MaterialTheme.typography.bodySmall, color = mutedText())
+            return@SectionCard
+        }
+        Canvas(Modifier.fillMaxWidth().height(190.dp)) {
+            val all = points.map { it.minutes } + planned.map { it.second }
+            var lo = ((all.min() - 30) / 60) * 60
+            var hi = ((all.max() + 89) / 60) * 60
+            if (hi - lo < 120) { lo -= 60; hi += 60 }
+            lo = lo.coerceAtLeast(0)
+            hi = hi.coerceAtMost(24 * 60)
+
+            val left = 42.dp.toPx()
+            val right = size.width - 8.dp.toPx()
+            val top = 10.dp.toPx()
+            val bottom = size.height - 10.dp.toPx()
+            val span = (xMax - xMin).coerceAtLeast(1e-9)
+            val dayW = (right - left) / span.toFloat()
+            fun x(v: Double) = left + ((v - xMin) / span).toFloat() * (right - left)
+            fun y(m: Int) = top + ((m - lo).toFloat() / (hi - lo)) * (bottom - top)
+
+            // Hour lines, earliest at the top.
+            val hours = (hi - lo) / 60
+            val step = when {
+                hours <= 4 -> 60
+                hours <= 8 -> 120
+                else -> 240
+            }
+            var m = lo
+            while (m <= hi) {
+                val yy = y(m)
+                drawLine(grid, Offset(left, yy), Offset(right, yy), 1f)
+                drawText(measurer, fmtClock(m), topLeft = Offset(0f, yy - 8.dp.toPx()), style = labelStyle)
+                m += step
+            }
+
+            // Planned time as a faint dashed step line.
+            val dash = PathEffect.dashPathEffect(floatArrayOf(6f, 6f))
+            planned.forEach { (px, pm) ->
+                val yy = y(pm)
+                drawLine(plannedColor, Offset(x(px) - dayW / 2, yy), Offset(x(px) + dayW / 2, yy), 1.5f, pathEffect = dash)
+            }
+
+            val radius = minOf(9.dp.toPx(), dayW * 0.45f).coerceAtLeast(2.5.dp.toPx())
+            val showNumbers = radius >= 6.dp.toPx()
+            points.forEach { p ->
+                val c = Offset(x(p.x), y(p.minutes))
+                val color = if (p.missed) BadFill else GoodFill
+                if (p.missed) {
+                    drawCircle(color, radius - 0.9.dp.toPx(), c, style = Stroke(1.8.dp.toPx()))
+                } else {
+                    drawCircle(color, radius, c)
+                }
+                if (showNumbers) {
+                    val text = measurer.measure(
+                        "${p.pills}",
+                        TextStyle(fontSize = 10.sp, fontWeight = FontWeight.Bold, color = if (p.missed) BadFill else Color.White),
+                    )
+                    drawText(text, topLeft = Offset(c.x - text.size.width / 2f, c.y - text.size.height / 2f))
+                }
+            }
+        }
+        Box(Modifier.padding(start = 42.dp)) { DateEnds(start) }
+        Row(horizontalArrangement = Arrangement.spacedBy(14.dp)) {
+            LegendDot(GoodFill, "Taken (pills inside)")
+            LegendDot(BadFill, "Missed")
+        }
+        Text(
+            "Dashed line: your planned time. Change a dose's time from the Today card or the calendar.",
+            style = MaterialTheme.typography.labelSmall,
+            color = mutedText(),
+        )
     }
 }
 

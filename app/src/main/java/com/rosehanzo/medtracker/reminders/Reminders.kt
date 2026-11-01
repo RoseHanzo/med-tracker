@@ -135,7 +135,7 @@ object Reminders {
         var date = today
         var scheduled = false
         for (i in 0 until 400) {
-            val due = Logic.planFor(s, date).pills > 0 && !(date == today && Logic.taken(d, today))
+            val due = Logic.planFor(s, date).pills > 0 && !(date == today && Logic.resolved(d, today))
             if (due) {
                 val t = dueAt(s, date)
                 if (t > now) {
@@ -151,7 +151,7 @@ object Reminders {
         // Today's dose is overdue: make sure the nagging is running (e.g. after a restart).
         val overdue = Logic.planFor(s, today).pills > 0 &&
             dueAt(s, today) <= now &&
-            !Logic.taken(d, today) &&
+            !Logic.resolved(d, today) &&
             !today.isBefore(Logic.startDate(s))
         if (!overdue) {
             stopNag(ctx)
@@ -176,7 +176,7 @@ object Reminders {
         val d = Store.data(ctx)
         val s = d.settings
         val pills = Logic.planFor(s, date).pills
-        val stillDue = s.remindersOn && pills > 0 && date == LocalDate.now() && !Logic.taken(d, date)
+        val stillDue = s.remindersOn && pills > 0 && date == LocalDate.now() && !Logic.resolved(d, date)
 
         if (!stillDue) {
             stopNag(ctx)

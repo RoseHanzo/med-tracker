@@ -1,6 +1,7 @@
 package com.rosehanzo.medtracker.ui
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -19,6 +20,8 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.CheckCircle
+import androidx.compose.material.icons.filled.Edit
+import androidx.compose.material.icons.filled.Cancel
 import androidx.compose.material.icons.filled.Description
 import androidx.compose.material.icons.filled.EventAvailable
 import androidx.compose.material.icons.filled.Inventory2
@@ -137,6 +140,7 @@ private fun DoseHero(data: AppData, today: LocalDate) {
     val s = data.settings
     val plan = Logic.planFor(s, today)
     val dose = data.doses[today.toString()]
+    val missedToday = Logic.missed(data, today)
     val due = Logic.fmtTime(Logic.doseMinutes(s, today))
     val white = Color.White
     val soft = Color.White.copy(alpha = 0.78f)
@@ -151,7 +155,7 @@ private fun DoseHero(data: AppData, today: LocalDate) {
         Column(verticalArrangement = Arrangement.spacedBy(14.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Text("Today's dose", style = MaterialTheme.typography.labelLarge, color = soft, modifier = Modifier.weight(1f))
-                if (plan.pills > 0 && dose == null) {
+                if (plan.pills > 0 && dose == null && !missedToday) {
                     Pill("Due $due", white.copy(alpha = 0.18f), white)
                 }
             }
@@ -163,15 +167,34 @@ private fun DoseHero(data: AppData, today: LocalDate) {
                         Text(s.medName, style = MaterialTheme.typography.bodyLarge, color = soft)
                     }
                     Row(verticalAlignment = Alignment.CenterVertically) {
-                        Icon(Icons.Filled.CheckCircle, contentDescription = null, tint = white, modifier = Modifier.size(22.dp))
-                        Spacer(Modifier.width(8.dp))
-                        Text(
-                            "Taken at ${timeOf(dose.time)}",
-                            style = MaterialTheme.typography.titleMedium,
-                            color = white,
-                            modifier = Modifier.weight(1f),
-                        )
+                        // Tap the time to change when you actually took it.
+                        Row(
+                            Modifier
+                                .weight(1f)
+                                .clip(RoundedCornerShape(12.dp))
+                                .clickable { pickDoseTime(ctx, today, dose.time) }
+                                .padding(vertical = 6.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Icon(Icons.Filled.CheckCircle, contentDescription = null, tint = white, modifier = Modifier.size(22.dp))
+                            Spacer(Modifier.width(8.dp))
+                            Text("Taken at ${timeOf(dose.time)}", style = MaterialTheme.typography.titleMedium, color = white)
+                            Spacer(Modifier.width(6.dp))
+                            Icon(Icons.Filled.Edit, contentDescription = "Change time", tint = soft, modifier = Modifier.size(16.dp))
+                        }
                         TextButton(onClick = { Logic.unmarkTaken(ctx, today) }) { Text("Undo", color = white) }
+                    }
+                }
+                missedToday -> {
+                    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                        Text(Logic.pillWord(plan.pills), style = MaterialTheme.typography.displaySmall, fontWeight = FontWeight.Bold, color = white)
+                        Text(s.medName, style = MaterialTheme.typography.bodyLarge, color = soft)
+                    }
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Icon(Icons.Filled.Cancel, contentDescription = null, tint = Color(0xFFFFB4AB), modifier = Modifier.size(22.dp))
+                        Spacer(Modifier.width(8.dp))
+                        Text("Marked as missed", style = MaterialTheme.typography.titleMedium, color = white, modifier = Modifier.weight(1f))
+                        TextButton(onClick = { Logic.unmarkMissed(ctx, today) }) { Text("Undo", color = white) }
                     }
                 }
                 plan.pills > 0 -> {
@@ -192,6 +215,10 @@ private fun DoseHero(data: AppData, today: LocalDate) {
                         Spacer(Modifier.width(8.dp))
                         Text("Mark as taken", style = MaterialTheme.typography.titleSmall)
                     }
+                    TextButton(
+                        onClick = { Logic.markMissed(ctx, today) },
+                        modifier = Modifier.fillMaxWidth(),
+                    ) { Text("Mark as missed", color = soft) }
                 }
                 else -> {
                     Row(verticalAlignment = Alignment.CenterVertically) {
@@ -230,6 +257,18 @@ private fun DoseHero(data: AppData, today: LocalDate) {
             }
         }
     }
+}
+
+/** Opens a time picker so you can say when you actually took the dose. */
+fun pickDoseTime(ctx: android.content.Context, date: LocalDate, current: Long) {
+    val t = java.time.Instant.ofEpochMilli(current).atZone(java.time.ZoneId.systemDefault()).toLocalTime()
+    android.app.TimePickerDialog(
+        ctx,
+        { _, h, m -> Logic.setDoseTime(ctx, date, h * 60 + m) },
+        t.hour,
+        t.minute,
+        android.text.format.DateFormat.is24HourFormat(ctx),
+    ).show()
 }
 
 private fun nextDoseText(data: AppData, today: LocalDate): String {

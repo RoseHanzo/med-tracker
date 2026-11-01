@@ -104,6 +104,8 @@ data class AppData(
     val checkins: Map<String, Map<String, Int>> = emptyMap(),
     val metrics: List<Metric> = emptyList(),
     val forms: List<FormReminder> = emptyList(),
+    /** Dates (yyyy-MM-dd) you marked as missed. */
+    val missed: Set<String> = emptySet(),
 )
 
 fun defaultSettings(): Settings {
@@ -239,6 +241,7 @@ object Codec {
         val root = JSONObject()
         root.put("version", 3)
         root.put("forms", forms)
+        root.put("missed", JSONArray(d.missed.toList()))
         root.put("settings", so)
         root.put("doses", doses)
         root.put("checkins", checkins)
@@ -359,7 +362,9 @@ object Codec {
             }
         } ?: emptyList()
 
-        val loaded = AppData(settings, doses, checkins, metrics.sortedBy { it.time }, forms)
+        val missed = o.optJSONArray("missed")?.let { a -> List(a.length()) { a.getString(it) }.toSet() } ?: emptySet()
+
+        val loaded = AppData(settings, doses, checkins, metrics.sortedBy { it.time }, forms, missed)
         return if (o.optInt("version", 1) < 3) alignScales(loaded) else loaded
     }
 
