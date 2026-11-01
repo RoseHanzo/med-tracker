@@ -8,6 +8,7 @@ import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.os.Build
+import android.text.format.DateFormat
 import androidx.core.app.NotificationCompat
 import androidx.core.app.NotificationManagerCompat
 import com.rosehanzo.medtracker.MainActivity
@@ -16,7 +17,10 @@ import com.rosehanzo.medtracker.data.Logic
 import com.rosehanzo.medtracker.data.Settings
 import com.rosehanzo.medtracker.data.Store
 import java.time.LocalDate
+import java.time.LocalTime
 import java.time.ZoneId
+import java.time.format.DateTimeFormatter
+import java.util.Locale
 
 /**
  * The daily dose reminder.
@@ -45,11 +49,12 @@ object Reminders {
 
     fun createChannels(ctx: Context) {
         val nm = ctx.getSystemService(NotificationManager::class.java) ?: return
-        val dose = NotificationChannel(CH_DOSE, "Medication reminders", NotificationManager.IMPORTANCE_HIGH)
-        dose.description = "Repeats until you mark your dose as taken"
+        // Names are kept neutral: they show when you long-press a notification.
+        val dose = NotificationChannel(CH_DOSE, "Daily tasks", NotificationManager.IMPORTANCE_HIGH)
+        dose.description = "Repeats until you tap Taken"
         dose.enableVibration(true)
         nm.createNotificationChannel(dose)
-        val stock = NotificationChannel(CH_STOCK, "Pill supply", NotificationManager.IMPORTANCE_DEFAULT)
+        val stock = NotificationChannel(CH_STOCK, "Supplies", NotificationManager.IMPORTANCE_DEFAULT)
         stock.description = "Warns you when you're running low"
         nm.createNotificationChannel(stock)
     }
@@ -84,6 +89,12 @@ object Reminders {
     fun canExact(ctx: Context): Boolean {
         if (Build.VERSION.SDK_INT < 31) return true
         return ctx.getSystemService(AlarmManager::class.java)?.canScheduleExactAlarms() ?: false
+    }
+
+    /** "9:30 am" or "09:30", following the phone's 12/24-hour setting. */
+    private fun clockTime(ctx: Context, minutes: Int): String {
+        val pattern = if (DateFormat.is24HourFormat(ctx)) "HH:mm" else "h:mm a"
+        return LocalTime.of(minutes / 60, minutes % 60).format(DateTimeFormatter.ofPattern(pattern, Locale.UK))
     }
 
     private fun dueAt(s: Settings, date: LocalDate): Long =
@@ -176,11 +187,13 @@ object Reminders {
             PendingIntent.FLAG_UPDATE_CURRENT or IMMUTABLE,
         )
 
-        val due = Logic.fmtTime(Logic.doseMinutes(s, date))
+        // Kept deliberately vague so the lock screen doesn't reveal what it's for.
+        val due = clockTime(ctx, Logic.doseMinutes(s, date))
         val text = "Due at $due. I'll remind you every ${s.nagMinutes} min until you tap Taken."
+        val title = if (pills == 1) "1 new task due today" else "$pills new tasks due today"
         val n = NotificationCompat.Builder(ctx, CH_DOSE)
-            .setSmallIcon(R.drawable.ic_pill)
-            .setContentTitle("Take ${Logic.pillWord(pills)} of ${s.medName}")
+            .setSmallIcon(R.drawable.ic_task)
+            .setContentTitle(title)
             .setContentText(text)
             .setStyle(NotificationCompat.BigTextStyle().bigText(text))
             .setPriority(NotificationCompat.PRIORITY_HIGH)
@@ -210,13 +223,13 @@ object Reminders {
         val nmc = NotificationManagerCompat.from(ctx)
         if (!nmc.areNotificationsEnabled()) return
         val text = if (days == 0) {
-            "You don't have enough for your next dose. Time to get your repeat prescription."
+            "Not enough left for your next task. Time to restock."
         } else {
-            "${Logic.pillWord(s.pillsLeft)} left, enough for about $days days. Time to order your repeat prescription."
+            "Enough left for about $days days. Time to restock."
         }
         val n = NotificationCompat.Builder(ctx, CH_STOCK)
-            .setSmallIcon(R.drawable.ic_pill)
-            .setContentTitle("Running low on ${s.medName}")
+            .setSmallIcon(R.drawable.ic_task)
+            .setContentTitle("Supplies running low")
             .setContentText(text)
             .setStyle(NotificationCompat.BigTextStyle().bigText(text))
             .setColor(BRAND)
@@ -233,9 +246,9 @@ object Reminders {
         val nmc = NotificationManagerCompat.from(ctx)
         if (!nmc.areNotificationsEnabled()) return false
         val n = NotificationCompat.Builder(ctx, CH_DOSE)
-            .setSmallIcon(R.drawable.ic_pill)
-            .setContentTitle("Test reminder")
-            .setContentText("This is how your dose reminders will look and sound.")
+            .setSmallIcon(R.drawable.ic_task)
+            .setContentTitle("1 new task due today")
+            .setContentText("Test reminder: this is how your reminders will look and sound.")
             .setPriority(NotificationCompat.PRIORITY_HIGH)
             .setColor(BRAND)
             .setAutoCancel(true)
